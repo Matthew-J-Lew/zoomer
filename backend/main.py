@@ -1,5 +1,7 @@
+import asyncio
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -11,7 +13,8 @@ from pydantic import BaseModel, HttpUrl
 # Optional signature verification (Svix-style headers)
 from svix.webhooks import Webhook, WebhookVerificationError
 
-from store import append_final_line, get_or_create_meeting, set_agenda
+from qa_engine import QAEngine
+from store import append_final_line, append_utterance, get_or_create_meeting, remember_participant, set_agenda
 from topic_tracker import TopicTracker
 
 app = FastAPI(title="Gen-Z Meeting Moderator (MVP: Topic Check-ins)")
@@ -31,6 +34,10 @@ ECHO_MAX_MESSAGES = int(os.getenv("ECHO_MAX_MESSAGES", "20"))
 
 TRANSCRIPT_OUTFILE = os.getenv("TRANSCRIPT_OUTFILE", "transcript.final.jsonl")
 
+BOT_NAME = os.getenv("BOT_NAME", "Meeting Moderator").strip() or "Meeting Moderator"
+
+qa_engine = QAEngine()
+
 topic_tracker = TopicTracker()
 
 
@@ -47,6 +54,18 @@ class StartMeetingBotResponse(BaseModel):
 
 class SetAgendaRequest(BaseModel):
     agenda: str
+
+
+class QARequest(BaseModel):
+    bot_id: str
+    question: str
+
+
+class QAResponse(BaseModel):
+    bot_id: str
+    question: str
+    answer: str
+    confidence: float
 
 
 @dataclass
@@ -77,6 +96,7 @@ async def recall_create_bot(meeting_url: str, webhook_url: str) -> Dict[str, Any
 
     body = {
         "meeting_url": meeting_url,
+        "bot_name": BOT_NAME,
         "recording_config": {
             "transcript": {
                 "provider": {
@@ -90,7 +110,12 @@ async def recall_create_bot(meeting_url: str, webhook_url: str) -> Dict[str, Any
                 {
                     "type": "webhook",
                     "url": webhook_url,
-                    "events": ["transcript.partial_data", "transcript.data"],
+                    "events": [
+                        "transcript.partial_data",
+                        "transcript.data",
+                        "participant_events.chat_message",
+                        "participant_events.join",
+                    ],
                 }
             ],
         },
@@ -126,6 +151,30 @@ def words_to_text(words: list[dict]) -> str:
     return " ".join([w.get("text", "").strip() for w in words]).strip()
 
 
+_MENTION_RE = re.compile(r"@?\s*" + re.escape(BOT_NAME) + r"\b", re.IGNORECASE)
+
+
+def extract_question_from_chat(text: str) -> Optional[str]:
+    """Returns the extracted question if the chat message is addressed to the bot.
+
+    We treat messages that contain '@<BOT_NAME>' (or '<BOT_NAME>') as questions.
+    """
+
+    t = (text or "").strip()
+    if not t:
+        return None
+
+    if not _MENTION_RE.search(t):
+        return None
+
+    # Remove the mention and leading punctuation
+    t = _MENTION_RE.sub("", t, count=1).strip()
+    t = re.sub(r"^[\s:,-]+", "", t).strip()
+    if not t:
+        return None
+    return t
+
+
 def should_echo(bot_id: str) -> bool:
     st = BOT_STATE.setdefault(bot_id, BotDebugState())
     now = time.time()
@@ -141,6 +190,25 @@ def should_echo(bot_id: str) -> bool:
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
+
+
+@app.post("/qa", response_model=QAResponse)
+async def qa(req: QARequest):
+    """Web (private) Q&A endpoint.
+
+    The frontend can call this with a bot_id + question and get a short answer.
+    """
+
+    st = get_or_create_meeting(req.bot_id)
+    res = await qa_engine.answer(st, req.question)
+    if res is None:
+        raise HTTPException(400, "QA is disabled")
+    return QAResponse(
+        bot_id=req.bot_id,
+        question=req.question,
+        answer=res.answer,
+        confidence=res.confidence,
+    )
 
 
 @app.post("/start-meeting-bot", response_model=StartMeetingBotResponse)
@@ -201,69 +269,116 @@ async def recall_webhook_realtime(request: Request):
         payload = await request.json()
 
     event = payload.get("event")
-    if event not in ("transcript.partial_data", "transcript.data"):
-        return
 
-    inner = (payload.get("data") or {}).get("data") or {}
-    words = inner.get("words") or []
-    participant = inner.get("participant") or {}
     bot = (payload.get("data") or {}).get("bot") or {}
     bot_id = bot.get("id") or "unknown"
 
-    text = words_to_text(words)
-    speaker = participant.get("name") or f"participant:{participant.get('id', 'unknown')}"
+    # Transcript events
+    if event in ("transcript.partial_data", "transcript.data"):
+        inner = (payload.get("data") or {}).get("data") or {}
+        words = inner.get("words") or []
+        participant = inner.get("participant") or {}
+        text = words_to_text(words)
+        speaker = participant.get("name") or f"participant:{participant.get('id', 'unknown')}"
 
-    if event == "transcript.partial_data":
-        print(f"[partial] ({bot_id}) {speaker}: {text}")
+        if event == "transcript.partial_data":
+            print(f"[partial] ({bot_id}) {speaker}: {text}")
+            return
+
+        # transcript.data (finalized)
+        print(f"[final] ({bot_id}) {speaker}: {text}")
+
+        # Save transcript line
+        line = {
+            "ts": time.time(),
+            "bot_id": bot_id,
+            "speaker": speaker,
+            "participant": participant,
+            "text": text,
+            "raw_event": event,
+        }
+        with open(TRANSCRIPT_OUTFILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+
+        # Keep rolling buffers
+        append_final_line(bot_id, f"{speaker}: {text}")
+        append_utterance(bot_id, speaker=speaker, text=text, ts=line["ts"])
+
+        # Optional echo (debug)
+        if ECHO_TO_CHAT and bot_id != "unknown" and text:
+            if should_echo(bot_id):
+                msg = f"Echo 🧾 {speaker}: {text}"
+                if len(msg) > 180:
+                    msg = msg[:177] + "..."
+                await recall_send_chat_message(bot_id, msg)
+
+        # Topic check-in (new scope)
+        if bot_id != "unknown":
+            st = get_or_create_meeting(bot_id)
+
+            if topic_tracker.should_check(st):
+                topic_result = await topic_tracker.infer_topic(st)
+                if topic_result:
+                    print(
+                        "[topic_check]",
+                        {
+                            "topic": topic_result.topic,
+                            "conf": topic_result.confidence,
+                            "reason": topic_result.reason,
+                            "prev": st.current_topic,
+                        },
+                    )
+
+                    if topic_result.confidence >= float(os.getenv("TOPIC_MIN_CONFIDENCE", "0.5")):
+                        if topic_tracker.is_changed_enough(st.current_topic, topic_result.topic):
+                            st.current_topic = topic_result.topic
+                            msg = topic_tracker.format_chat_message(topic_result.topic)
+                            await recall_send_chat_message(bot_id, msg)
+
         return
 
-    # transcript.data (finalized)
-    print(f"[final] ({bot_id}) {speaker}: {text}")
+    # Participant events: join
+    if event == "participant_events.join":
+        inner = (payload.get("data") or {}).get("data") or {}
+        participant = inner.get("participant") or {}
+        name = participant.get("name") or ""
+        pid = participant.get("id") or ""
+        if bot_id != "unknown":
+            remember_participant(bot_id, name=name, pid=str(pid))
+        return
 
-    # Save transcript line
-    line = {
-        "ts": time.time(),
-        "bot_id": bot_id,
-        "speaker": speaker,
-        "participant": participant,
-        "text": text,
-        "raw_event": event,
-    }
-    with open(TRANSCRIPT_OUTFILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    # Participant events: chat messages
+    if event == "participant_events.chat_message":
+        inner = (payload.get("data") or {}).get("data") or {}
+        participant = inner.get("participant") or {}
+        data = inner.get("data") or {}
+        text = (data.get("text") or "").strip()
+        speaker = participant.get("name") or f"participant:{participant.get('id', 'unknown')}"
 
-    # Keep rolling transcript buffer for tangent detection
-    append_final_line(bot_id, f"{speaker}: {text}")
+        # Prevent loops: ignore the bot's own messages
+        if speaker.strip().lower() == BOT_NAME.lower():
+            return
 
-    # Optional echo (debug)
-    if ECHO_TO_CHAT and bot_id != "unknown" and text:
-        if should_echo(bot_id):
-            msg = f"Echo 🧾 {speaker}: {text}"
-            if len(msg) > 180:
-                msg = msg[:177] + "..."
+        question = extract_question_from_chat(text)
+        if not question:
+            return
+
+        print(f"[chat_question] ({bot_id}) {speaker}: {question}")
+
+        async def _handle_question() -> None:
+            if bot_id == "unknown":
+                return
+            st = get_or_create_meeting(bot_id)
+            res = await qa_engine.answer(st, question)
+            if res is None:
+                return
+            # Public reply (Zoom chat is used for public questions)
+            msg = f"🤖 {speaker}: {res.answer}"
+            if len(msg) > 380:
+                msg = msg[:377] + "..."
             await recall_send_chat_message(bot_id, msg)
 
-    # Topic check-in (new scope)
-    if bot_id != "unknown":
-        st = get_or_create_meeting(bot_id)
-
-        if topic_tracker.should_check(st):
-            topic_result = await topic_tracker.infer_topic(st)
-            if topic_result:
-                print(
-                    "[topic_check]",
-                    {
-                        "topic": topic_result.topic,
-                        "conf": topic_result.confidence,
-                        "reason": topic_result.reason,
-                        "prev": st.current_topic,
-                    },
-                )
-
-                if topic_result.confidence >= float(os.getenv("TOPIC_MIN_CONFIDENCE", "0.5")):
-                    if topic_tracker.is_changed_enough(st.current_topic, topic_result.topic):
-                        st.current_topic = topic_result.topic
-                        msg = topic_tracker.format_chat_message(topic_result.topic)
-                        await recall_send_chat_message(bot_id, msg)
+        asyncio.create_task(_handle_question())
+        return
 
     return

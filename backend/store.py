@@ -7,10 +7,25 @@ from typing import Deque, Dict, Optional
 
 
 @dataclass
+class TranscriptUtterance:
+    ts: float
+    speaker: str
+    text: str
+
+
+@dataclass
 class MeetingState:
     bot_id: str
     agenda: str = ""
     recent_finals: Deque[str] = field(default_factory=lambda: deque(maxlen=10))
+
+    # Larger rolling transcript for Q&A (most recent last)
+    transcript_history: Deque[TranscriptUtterance] = field(
+        default_factory=lambda: deque(maxlen=800)
+    )
+
+    # Participant lookup (useful for future DM replies on Zoom)
+    participant_name_to_id: Dict[str, str] = field(default_factory=dict)
 
     # Topic tracking (new scope)
     current_topic: str = ""
@@ -48,6 +63,27 @@ def append_final_line(bot_id: str, line: str) -> MeetingState:
     line = (line or "").strip()
     if line:
         st.recent_finals.append(line)
+    return st
+
+
+def append_utterance(bot_id: str, speaker: str, text: str, ts: Optional[float] = None) -> MeetingState:
+    st = get_or_create_meeting(bot_id)
+    speaker = (speaker or "").strip() or "unknown"
+    text = (text or "").strip()
+    if not text:
+        return st
+    if ts is None:
+        ts = now_ts()
+    st.transcript_history.append(TranscriptUtterance(ts=ts, speaker=speaker, text=text))
+    return st
+
+
+def remember_participant(bot_id: str, name: str, pid: str) -> MeetingState:
+    st = get_or_create_meeting(bot_id)
+    name = (name or "").strip()
+    pid = (pid or "").strip()
+    if name and pid:
+        st.participant_name_to_id[name] = pid
     return st
 
 

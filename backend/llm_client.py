@@ -24,6 +24,12 @@ class TopicResult:
     reason: str
 
 
+@dataclass
+class QAResult:
+    answer: str
+    confidence: float
+
+
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
@@ -197,3 +203,75 @@ class LLMClient:
             topic = topic[:77] + "..."
 
         return TopicResult(topic=topic, confidence=confidence, reason=reason)
+
+    async def answer_question(
+        self,
+        agenda: str,
+        current_topic: str,
+        question: str,
+        transcript_excerpts: str,
+    ) -> QAResult:
+        """Answer a question using only provided transcript excerpts.
+
+        The caller is responsible for retrieving relevant excerpts.
+        """
+
+        system = (
+            "You are a sarcastic-but-helpful Gen-Z meeting assistant. "
+            "Answer questions using ONLY the provided transcript excerpts. "
+            "If the answer is not in the excerpts, say you haven't heard it yet."
+        )
+
+        user = (
+            "Meeting agenda/goal (may be empty):\n"
+            f"{(agenda or '').strip()}\n\n"
+            "Current inferred topic (may be empty):\n"
+            f"{(current_topic or '').strip()}\n\n"
+            "Question:\n"
+            f"{(question or '').strip()}\n\n"
+            "Transcript excerpts (most recent last):\n"
+            f"{transcript_excerpts}\n\n"
+            "Return JSON only:\n"
+            "{\n"
+            "  \"answer\": \"2 sentences max\",\n"
+            "  \"confidence\": number 0..1\n"
+            "}\n"
+            "Rules:\n"
+            "- Keep the answer to ~2 sentences.\n"
+            "- Don't invent details; if it's not in the excerpts, say you haven't heard it yet.\n"
+            "- Avoid targeting individuals; keep tone constructive.\n"
+        )
+
+        url = f"{self.base_url}/chat/completions"
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"},
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code >= 300:
+                raise RuntimeError(f"LLM error {resp.status_code}: {resp.text[:500]}")
+
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            obj = _extract_json_object(content)
+
+        answer = str(obj.get("answer", "") or "").strip()
+        confidence = _clamp01(obj.get("confidence", 0.0))
+
+        # Light hard limits for chat usability
+        if len(answer) > 350:
+            answer = answer[:347] + "..."
+
+        return QAResult(answer=answer, confidence=confidence)
