@@ -33,6 +33,20 @@ class QAResult:
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
+def _normalize_json_object(obj: Any) -> Dict[str, Any]:
+    """Normalize model JSON output to a dict.
+
+    Some models may return a JSON array (e.g. [{...}]) even when asked for a
+    single JSON object. We normalize to the first dict when possible.
+    """
+
+    if isinstance(obj, dict):
+        return obj
+    if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+        return obj[0]
+    raise ValueError(f"Expected JSON object, got: {type(obj).__name__}")
+
+
 def _extract_json_object(text: str) -> Dict[str, Any]:
     """
     Attempts to parse a JSON object from a model response.
@@ -42,12 +56,12 @@ def _extract_json_object(text: str) -> Dict[str, Any]:
     """
     text = text.strip()
     try:
-        return json.loads(text)
+        return _normalize_json_object(json.loads(text))
     except Exception:
         m = _JSON_OBJECT_RE.search(text)
         if not m:
             raise ValueError(f"Model did not return JSON. Raw: {text[:400]}")
-        return json.loads(m.group(0))
+        return _normalize_json_object(json.loads(m.group(0)))
 
 
 def _clamp01(x: Any) -> float:
@@ -63,18 +77,97 @@ def _clamp01(x: Any) -> float:
 
 
 class LLMClient:
-    """
-    OpenAI-compatible Chat Completions client.
+    """LLM client with pluggable providers.
+
+    Supported providers:
+    - openai: OpenAI-compatible /chat/completions API
+    - gemini: Google Generative Language API (generateContent)
     """
 
     def __init__(self) -> None:
-        self.api_key = os.getenv("LLM_API_KEY", "").strip()
-        self.base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-        self.model = os.getenv("LLM_MODEL", "gpt-4o-mini").strip()
+        self.provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
         self.timeout_s = float(os.getenv("LLM_TIMEOUT_S", "20"))
+        self.max_tokens = int(os.getenv("LLM_MAX_TOKENS", "500"))
+        self.temperature = float(os.getenv("LLM_TEMPERATURE", "0.2"))
+
+        if self.provider == "gemini":
+            # Prefer GEMINI_API_KEY but allow LLM_API_KEY as fallback.
+            self.api_key = (os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("LLM_API_KEY", "").strip())
+            self.model = os.getenv("LLM_MODEL", "gemini-2.0-flash").strip()
+            # Base URL is fixed for Gemini.
+            self.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        else:
+            # OpenAI-compatible
+            self.api_key = os.getenv("LLM_API_KEY", "").strip() or os.getenv("OPENAI_API_KEY", "").strip()
+            self.base_url = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+            self.model = os.getenv("LLM_MODEL", "gpt-4o-mini").strip()
 
         if not self.api_key:
-            raise RuntimeError("Missing LLM_API_KEY (set in .env)")
+            raise RuntimeError(
+                "Missing API key. Set LLM_API_KEY (openai) or GEMINI_API_KEY (gemini) in .env"
+            )
+
+    async def _chat_json(self, system: str, user: str) -> Dict[str, Any]:
+        """Call the configured provider and return a parsed JSON object."""
+        if self.provider == "gemini":
+            return await self._chat_json_gemini(system=system, user=user)
+        return await self._chat_json_openai(system=system, user=user)
+
+    async def _chat_json_openai(self, system: str, user: str) -> Dict[str, Any]:
+        url = f"{self.base_url}/chat/completions"
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code >= 300:
+                raise RuntimeError(f"LLM error {resp.status_code}: {resp.text[:500]}")
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            return _extract_json_object(content)
+
+    async def _chat_json_gemini(self, system: str, user: str) -> Dict[str, Any]:
+        # Gemini doesn't have a separate system role in this REST API; we prepend.
+        prompt = f"{system}\n\n{user}".strip()
+        url = f"{self.base_url}/models/{self.model}:generateContent"
+        params = {"key": self.api_key}
+        payload: Dict[str, Any] = {
+            "contents": [
+                {"role": "user", "parts": [{"text": prompt}]},
+            ],
+            "generationConfig": {
+                "temperature": self.temperature,
+                "maxOutputTokens": self.max_tokens,
+            },
+        }
+        async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+            resp = await client.post(url, params=params, json=payload)
+            if resp.status_code >= 300:
+                raise RuntimeError(f"Gemini error {resp.status_code}: {resp.text[:500]}")
+            data = resp.json()
+
+            # Typical shape: candidates[0].content.parts[0].text
+            try:
+                parts = data["candidates"][0]["content"]["parts"]
+                text = "".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
+            except Exception:
+                raise RuntimeError(f"Unexpected Gemini response: {str(data)[:500]}")
+
+            # Remove code fences if present
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE).strip()
+            text = re.sub(r"```$", "", text).strip()
+            return _extract_json_object(text)
 
     async def classify_tangent(self, agenda: str, recent_context: str) -> TangentResult:
         system = (
@@ -99,32 +192,7 @@ class LLMClient:
             "- Avoid personal insults, slurs, or harassment.\n"
         )
 
-        url = f"{self.base_url}/chat/completions"
-        payload: Dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0.2,
-        }
-
-        # If supported by the provider, request JSON mode (harmless if ignored)
-        payload["response_format"] = {"type": "json_object"}
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code >= 300:
-                raise RuntimeError(f"LLM error {resp.status_code}: {resp.text[:500]}")
-
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-            obj = _extract_json_object(content)
+        obj = await self._chat_json(system=system, user=user)
 
         on_topic = bool(obj.get("on_topic", True))
         confidence = _clamp01(obj.get("confidence", 0.0))
@@ -169,30 +237,7 @@ class LLMClient:
             "- If the transcript is too thin/unclear, lower confidence.\n"
         )
 
-        url = f"{self.base_url}/chat/completions"
-        payload: Dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-        }
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code >= 300:
-                raise RuntimeError(f"LLM error {resp.status_code}: {resp.text[:500]}")
-
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-            obj = _extract_json_object(content)
+        obj = await self._chat_json(system=system, user=user)
 
         topic = str(obj.get("topic", "") or "").strip()
         confidence = _clamp01(obj.get("confidence", 0.0))
@@ -242,30 +287,7 @@ class LLMClient:
             "- Avoid targeting individuals; keep tone constructive.\n"
         )
 
-        url = f"{self.base_url}/chat/completions"
-        payload: Dict[str, Any] = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-        }
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code >= 300:
-                raise RuntimeError(f"LLM error {resp.status_code}: {resp.text[:500]}")
-
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-            obj = _extract_json_object(content)
+        obj = await self._chat_json(system=system, user=user)
 
         answer = str(obj.get("answer", "") or "").strip()
         confidence = _clamp01(obj.get("confidence", 0.0))

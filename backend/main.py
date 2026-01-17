@@ -36,9 +36,16 @@ TRANSCRIPT_OUTFILE = os.getenv("TRANSCRIPT_OUTFILE", "transcript.final.jsonl")
 
 BOT_NAME = os.getenv("BOT_NAME", "Meeting Moderator").strip() or "Meeting Moderator"
 
+# Optional extra strings that should count as "mentioning" the bot in chat.
+# Example: BOT_MENTION_ALIASES="Meeting Moderator (Recall),Moderator"
+BOT_MENTION_ALIASES = [s.strip() for s in os.getenv("BOT_MENTION_ALIASES", "").split(",") if s.strip()]
+
 qa_engine = QAEngine()
 
 topic_tracker = TopicTracker()
+
+# Prevent overlapping topic-check LLM calls per bot.
+TOPIC_TASK_RUNNING: Dict[str, bool] = {}
 
 
 class StartMeetingBotRequest(BaseModel):
@@ -151,7 +158,18 @@ def words_to_text(words: list[dict]) -> str:
     return " ".join([w.get("text", "").strip() for w in words]).strip()
 
 
-_MENTION_RE = re.compile(r"@?\s*" + re.escape(BOT_NAME) + r"\b", re.IGNORECASE)
+def _build_mention_re() -> re.Pattern:
+    # Build a forgiving regex that matches any configured alias.
+    names = [BOT_NAME] + BOT_MENTION_ALIASES
+    # Sort longer first to avoid partial matches
+    names = sorted({n for n in names if n.strip()}, key=len, reverse=True)
+    if not names:
+        names = ["bot"]
+    alts = "|".join(re.escape(n) for n in names)
+    return re.compile(r"@?\s*(?:" + alts + r")\b", re.IGNORECASE)
+
+
+_MENTION_RE = _build_mention_re()
 
 
 def extract_question_from_chat(text: str) -> Optional[str]:
@@ -316,24 +334,39 @@ async def recall_webhook_realtime(request: Request):
         if bot_id != "unknown":
             st = get_or_create_meeting(bot_id)
 
-            if topic_tracker.should_check(st):
-                topic_result = await topic_tracker.infer_topic(st)
-                if topic_result:
-                    print(
-                        "[topic_check]",
-                        {
-                            "topic": topic_result.topic,
-                            "conf": topic_result.confidence,
-                            "reason": topic_result.reason,
-                            "prev": st.current_topic,
-                        },
-                    )
+            if topic_tracker.should_check(st) and not TOPIC_TASK_RUNNING.get(bot_id):
+                # Mark as running and advance the timer immediately so we don't queue a burst.
+                TOPIC_TASK_RUNNING[bot_id] = True
+                st.last_topic_check_ts = time.time()
 
-                    if topic_result.confidence >= float(os.getenv("TOPIC_MIN_CONFIDENCE", "0.5")):
-                        if topic_tracker.is_changed_enough(st.current_topic, topic_result.topic):
-                            st.current_topic = topic_result.topic
-                            msg = topic_tracker.format_chat_message(topic_result.topic)
-                            await recall_send_chat_message(bot_id, msg)
+                async def _run_topic_check() -> None:
+                    try:
+                        topic_result = await topic_tracker.infer_topic(st)
+                        if not topic_result:
+                            return
+
+                        print(
+                            "[topic_check]",
+                            {
+                                "topic": topic_result.topic,
+                                "conf": topic_result.confidence,
+                                "reason": topic_result.reason,
+                                "prev": st.current_topic,
+                            },
+                        )
+
+                        if topic_result.confidence >= float(os.getenv("TOPIC_MIN_CONFIDENCE", "0.5")):
+                            if topic_tracker.is_changed_enough(st.current_topic, topic_result.topic):
+                                st.current_topic = topic_result.topic
+                                msg = topic_tracker.format_chat_message(topic_result.topic)
+                                await recall_send_chat_message(bot_id, msg)
+                    except Exception as e:
+                        # Never break the webhook loop due to LLM issues.
+                        print("[topic_check] error:", repr(e))
+                    finally:
+                        TOPIC_TASK_RUNNING.pop(bot_id, None)
+
+                asyncio.create_task(_run_topic_check())
 
         return
 
@@ -353,13 +386,24 @@ async def recall_webhook_realtime(request: Request):
         participant = inner.get("participant") or {}
         data = inner.get("data") or {}
         text = (data.get("text") or "").strip()
+        to_field = (data.get("to") or "").strip()
         speaker = participant.get("name") or f"participant:{participant.get('id', 'unknown')}"
+
+        # Debug visibility: log every chat message event we receive.
+        print(f"[chat_event] ({bot_id}) {speaker} -> {to_field or 'unknown_to'}: {text}")
 
         # Prevent loops: ignore the bot's own messages
         if speaker.strip().lower() == BOT_NAME.lower():
             return
 
         question = extract_question_from_chat(text)
+        # Fallback: some platforms format mentions oddly, but still set `to`.
+        if not question and to_field:
+            # If the message is directed at the bot (DM or reply), treat it as a question.
+            # We keep this forgiving to avoid missing queries.
+            if BOT_NAME.lower() in to_field.lower() or "bot" in to_field.lower():
+                # Strip a leading @mention if present
+                question = re.sub(r"^@\S+\s+", "", text).strip() or text
         if not question:
             return
 
