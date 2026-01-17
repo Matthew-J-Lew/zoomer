@@ -1,13 +1,18 @@
 "use client";
 
 import React, { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
+import { Presentation, Sparkles } from "lucide-react";
 
 export default function MeetingPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [question, setQuestion] = useState("");
+
+  // Read topic updates setting from URL params
+  const topicUpdatesEnabled = searchParams.get("topicUpdates") !== "false";
 
   const handleEndMeeting = () => {
     router.push("/post-meeting");
@@ -33,32 +38,35 @@ export default function MeetingPage() {
           </div>
         </header>
 
-        {/* Center Content: Topic */}
-        <div className="flex-1 flex flex-col items-center justify-center text-center max-w-2xl mx-auto">
-          <div className="mb-6 opacity-80">
-            <svg
-              className="w-16 h-16 text-accent-primary mx-auto mb-4"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
-              />
-            </svg>
+
+        {/* Center Content: Meeting in Progress */}
+        <div className="flex-1 flex flex-col items-center justify-center text-center max-w-4xl mx-auto pb-24">
+          <div className="mb-6">
+            <Presentation className="w-20 h-20 text-accent mx-auto" strokeWidth={1.5} />
           </div>
-          <h2 className="text-sm uppercase tracking-wider text-muted-text font-semibold mb-3">
-            Current Topic
-          </h2>
           <h1 className="text-3xl sm:text-4xl font-semibold text-primary-text leading-tight">
-            Weekly Sync with Design Team
+            Meeting in Progress
           </h1>
           <p className="mt-4 text-secondary-text text-lg max-w-lg">
-            Discussing the new maximizing user retention strategies and upcoming Q3 roadmap.
+            Your assistant is listening and will provide a summary when the meeting ends.
           </p>
+
+          {/* Topic Box - only shown when topic updates are enabled */}
+          {topicUpdatesEnabled && (
+            <div className="mt-8">
+              <div className="bg-surface border border-border rounded-2xl px-8 py-6 shadow-lg max-w-xl">
+                <div className="flex items-center justify-center gap-2 mb-4">
+                  <Sparkles className="w-4 h-4 text-accent" />
+                  <h2 className="text-sm uppercase tracking-wider text-muted-text font-semibold">
+                    Current Topic
+                  </h2>
+                </div>
+                <p className="text-lg sm:text-xl font-medium text-primary-text leading-relaxed">
+                  Weekly Sync with Design Team — Discussing the new maximizing user retention strategies and upcoming Q3 roadmap.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
