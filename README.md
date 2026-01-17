@@ -256,3 +256,12 @@ backend/*.jsonl
 frontend/node_modules/
 frontend/.next/
 ```
+
+
+
+Okay we're slightly switching scope, instead of tangent detection and sending chat messages based on that, we're going to do the following:
+1. At 30 second intervals, check in on the meeting topic, send the meeting topic in chat, if the topic has not changed then pass
+
+Can we rewire the tangent code such that:
+- every 30 seconds, makes a topic/checks a topic
+- if the current topic 
