@@ -12,9 +12,9 @@ from pydantic import BaseModel, HttpUrl
 from svix.webhooks import Webhook, WebhookVerificationError
 
 from store import append_final_line, get_or_create_meeting, set_agenda
-from tangent_detector import TangentDetector
+from topic_tracker import TopicTracker
 
-app = FastAPI(title="Gen-Z Meeting Moderator (MVP Increment 2: Tangent Detection)")
+app = FastAPI(title="Gen-Z Meeting Moderator (MVP: Topic Check-ins)")
 
 RECALL_API_KEY = os.getenv("RECALL_API_KEY", "")
 RECALL_BASE_URL = os.getenv("RECALL_BASE_URL", "https://us-west-2.recall.ai").rstrip("/")
@@ -31,7 +31,7 @@ ECHO_MAX_MESSAGES = int(os.getenv("ECHO_MAX_MESSAGES", "20"))
 
 TRANSCRIPT_OUTFILE = os.getenv("TRANSCRIPT_OUTFILE", "transcript.final.jsonl")
 
-detector = TangentDetector()
+topic_tracker = TopicTracker()
 
 
 class StartMeetingBotRequest(BaseModel):
@@ -172,7 +172,7 @@ async def start_meeting_bot(req: StartMeetingBotRequest):
         webhook_url=webhook_url,
         note=(
             "Bot created. Transcript will stream to webhook. "
-            "Tangent detection runs on finalized transcript.data when agenda is set."
+            "Every ~30s, the bot infers the current topic from recent transcript and posts an update if it changes."
         ),
     )
 
@@ -243,17 +243,27 @@ async def recall_webhook_realtime(request: Request):
                 msg = msg[:177] + "..."
             await recall_send_chat_message(bot_id, msg)
 
-    # Tangent detection (Option B)
+    # Topic check-in (new scope)
     if bot_id != "unknown":
         st = get_or_create_meeting(bot_id)
 
-        if detector.should_check(st):
-            result = await detector.classify(st)
-            if result:
-                print("[tangent_check]", {"on_topic": result.on_topic, "conf": result.confidence, "reason": result.reason})
+        if topic_tracker.should_check(st):
+            topic_result = await topic_tracker.infer_topic(st)
+            if topic_result:
+                print(
+                    "[topic_check]",
+                    {
+                        "topic": topic_result.topic,
+                        "conf": topic_result.confidence,
+                        "reason": topic_result.reason,
+                        "prev": st.current_topic,
+                    },
+                )
 
-                if detector.register_strike_and_should_intervene(st, result):
-                    if result.message:
-                        await recall_send_chat_message(bot_id, result.message)
+                if topic_result.confidence >= float(os.getenv("TOPIC_MIN_CONFIDENCE", "0.5")):
+                    if topic_tracker.is_changed_enough(st.current_topic, topic_result.topic):
+                        st.current_topic = topic_result.topic
+                        msg = topic_tracker.format_chat_message(topic_result.topic)
+                        await recall_send_chat_message(bot_id, msg)
 
     return

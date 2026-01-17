@@ -12,6 +12,10 @@ class MeetingState:
     agenda: str = ""
     recent_finals: Deque[str] = field(default_factory=lambda: deque(maxlen=10))
 
+    # Topic tracking (new scope)
+    current_topic: str = ""
+    last_topic_check_ts: float = 0.0
+
     # Rate limiting / spam guard
     last_llm_check_ts: float = 0.0
     cooldown_until_ts: float = 0.0

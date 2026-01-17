@@ -17,6 +17,13 @@ class TangentResult:
     message: str
 
 
+@dataclass
+class TopicResult:
+    topic: str
+    confidence: float
+    reason: str
+
+
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
@@ -131,3 +138,62 @@ class LLMClient:
             reason=reason,
             message=message,
         )
+
+    async def detect_topic(self, meeting_context: str, recent_context: str) -> TopicResult:
+        """Infer the current meeting topic from recent transcript.
+
+        Returns a short topic label (not a full sentence).
+        """
+        system = "You summarize meeting conversation into a short current topic label for chat check-ins."
+        user = (
+            "Meeting context (agenda / goal). This may be empty:\n"
+            f"{(meeting_context or '').strip()}\n\n"
+            "Recent transcript (most recent last):\n"
+            f"{recent_context}\n\n"
+            "Return JSON only:\n"
+            "{\n"
+            "  \"topic\": \"short topic label\",\n"
+            "  \"confidence\": number 0..1,\n"
+            "  \"reason\": \"brief reason\"\n"
+            "}\n"
+            "Rules:\n"
+            "- Output a topic label, not a paragraph (e.g., 'Assigning frontend tasks' / 'Deciding demo flow').\n"
+            "- Keep topic <= 80 characters.\n"
+            "- Avoid using people's names in the topic.\n"
+            "- If the transcript is too thin/unclear, lower confidence.\n"
+        )
+
+        url = f"{self.base_url}/chat/completions"
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"},
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code >= 300:
+                raise RuntimeError(f"LLM error {resp.status_code}: {resp.text[:500]}")
+
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            obj = _extract_json_object(content)
+
+        topic = str(obj.get("topic", "") or "").strip()
+        confidence = _clamp01(obj.get("confidence", 0.0))
+        reason = str(obj.get("reason", "") or "").strip()
+
+        # Hard limits
+        if len(topic) > 80:
+            topic = topic[:77] + "..."
+
+        return TopicResult(topic=topic, confidence=confidence, reason=reason)
