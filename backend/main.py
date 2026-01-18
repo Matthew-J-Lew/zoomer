@@ -269,6 +269,20 @@ async def update_agenda(bot_id: str, req: SetAgendaRequest):
     return {"bot_id": bot_id, "agenda": st.agenda}
 
 
+@app.get("/meeting/{bot_id}/topic")
+async def get_topic(bot_id: str):
+    """Return the current topic for a meeting.
+
+    The frontend polls this endpoint to get real-time topic updates.
+    """
+    st = get_or_create_meeting(bot_id)
+    return {
+        "bot_id": bot_id,
+        "topic": st.current_topic,
+        "last_updated": st.last_topic_check_ts,
+    }
+
+
 @app.post("/recall/webhook/realtime/", status_code=status.HTTP_204_NO_CONTENT)
 async def recall_webhook_realtime(request: Request):
     raw = await request.body()
