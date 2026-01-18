@@ -6,7 +6,14 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
+from pydantic import BaseModel
+
+from googletrans import Translator
+
 import httpx
+from fastapi import FastAPI, HTTPException, Request, status, UploadFile, File, Form
+from fastapi.responses import JSONResponse
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Request
@@ -92,6 +99,9 @@ class QAResponse(BaseModel):
     answer: str
     confidence: float
 
+class TranslateFileRequest(BaseModel):
+    filename: str
+    target_lang: str
 
 @dataclass
 class BotDebugState:
@@ -458,3 +468,107 @@ async def recall_webhook_realtime(request: Request):
         return
 
     return
+
+
+def translate_jsonl_file(
+    input_file: str,
+    target_lang: str,
+    batch_size: int = 5,
+) -> list[dict]:
+    translator = Translator()
+
+    objects = []
+    texts = []
+    text_positions = []
+
+    # 1. Read JSONL safely
+    with open(input_file, "r", encoding="utf-8") as f:
+        for idx, line in enumerate(f):
+            if not line.strip():
+                continue
+
+            obj = json.loads(line)
+            objects.append(obj)
+
+            text = obj.get("text")
+            if isinstance(text, str) and text.strip():
+                texts.append(text)
+                text_positions.append(len(objects) - 1)
+
+    # 2. Translate in batches
+    translated_texts = []
+
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+
+        try:
+            translations = translator.translate(
+                batch,
+                src="en",
+                dest=target_lang,
+            )
+            translated_texts.extend([t.text for t in translations])
+        except Exception:
+            # fallback to single translation
+            for text in batch:
+                try:
+                    translated_texts.append(
+                        translator.translate(text, src="en", dest=target_lang).text
+                    )
+                except Exception:
+                    translated_texts.append(text)
+
+    # 3. Map translations back
+    for pos, translated in zip(text_positions, translated_texts):
+        objects[pos]["text"] = translated
+
+    return objects
+
+@app.post("/translate-file")
+async def translate_file(req: TranslateFileRequest):
+    file_path = req.filename
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        translated_data = translate_jsonl_file(
+            input_file=file_path,
+            target_lang=req.target_lang,
+        )
+
+        return {
+            "translated_data": translated_data
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Translation failed: {str(e)}",
+        )
+
+
+# @app.post("/translate-file")
+# async def translate_file_endpoint(
+#     file: UploadFile = File(...),
+#     target_lang: str = Form(...)
+# ):
+#     if not file.filename.endswith(".jsonl"):
+#         raise HTTPException(status_code=400, detail="Only JSONL files are accepted.")
+
+#     content = await file.read()
+#     lines = content.decode("utf-8").splitlines()
+
+#     objects = []
+#     for line in lines:
+#         if not line.strip():
+#             continue
+#         try:
+#             objects.append(json.loads(line))
+#         except json.JSONDecodeError:
+#             continue
+
+#     # Translate safely in thread to avoid blocking
+#     translated_objects = await asyncio.to_thread(translate_texts, objects, target_lang, 5)
+
+#     return JSONResponse(content={"translated_data": translated_objects})

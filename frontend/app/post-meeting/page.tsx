@@ -1,6 +1,5 @@
 "use client";
-
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 
@@ -8,6 +7,46 @@ export default function PostMeetingPage() {
   const [activeTab, setActiveTab] = useState<"transcript" | "summary" | "questions">("transcript");
   const [currentTime, setCurrentTime] = useState("00:00");
   const [language, setLanguage] = useState<"en" | "es">("en");
+  const [translatedData, setTranslatedData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  const INPUT_FILE = "transcript.final.jsonl"
+
+useEffect(() => {
+  const translateFile = async () => {
+    if (!language) return;
+
+    setLoading(true);
+
+    try {
+      const response = await fetch("http://localhost:8000/translate-file", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          filename: INPUT_FILE,
+          target_lang: language,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Translation failed: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      // Just log result (no download)
+      console.log("Translated Data:", data.translated_data);
+    } catch (err) {
+      console.error("Translation Error:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  translateFile();
+}, [language]);
 
   const mockTranscriptEn = [
     { time: "00:15", speaker: "Alex", text: "Okay, let's get started with the weekly sync." },
