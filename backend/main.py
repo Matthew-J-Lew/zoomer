@@ -129,7 +129,7 @@ async def recall_create_bot(meeting_url: str, webhook_url: str) -> Dict[str, Any
         "chat": {
             "on_bot_join": {
                 "send_to": "everyone",
-                "message": "👋 I’m here. I’ll be quietly judging… and taking notes.",
+                "message": "👋 I'm here. I'll be quietly judging... and taking notes.",
             }
         },
     }
