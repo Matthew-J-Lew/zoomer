@@ -158,12 +158,33 @@ class QAEngine:
         if not question:
             return []
 
-        history = list(st.transcript_history)
+        history = list(getattr(st, "transcript_history", []))
         if not history:
             return []
 
+        # --- Indexed candidate selection (cheap) ---
+        # If we have an inverted index on the meeting state, use it to avoid
+        # scanning the entire transcript for every question.
+        candidates: List[Tuple[int, TranscriptUtterance]] = []
+        index = getattr(st, "token_index", None)
+        qt = _tokenize(question)
+        if isinstance(index, dict) and qt:
+            idxs: Set[int] = set()
+            for tok in qt:
+                for i in index.get(tok, [])[-300:]:
+                    idxs.add(int(i))
+            # If the index yields nothing, fall back to full scan.
+            if idxs:
+                # Keep candidates in chronological order
+                for i in sorted(idxs):
+                    if 0 <= i < len(history):
+                        candidates.append((i, history[i]))
+        if not candidates:
+            # No index / no matches: consider everything
+            candidates = list(enumerate(history))
+
         scored: List[Tuple[float, int, TranscriptUtterance]] = []
-        for idx, u in enumerate(history):
+        for idx, u in candidates:
             s = _score_utterance(question, u)
             if s <= 0.0:
                 continue
