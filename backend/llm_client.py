@@ -222,9 +222,9 @@ class LLMClient:
     async def detect_topic(self, meeting_context: str, recent_context: str) -> TopicResult:
         """Infer the current meeting topic from recent transcript.
 
-        Returns a short topic label (not a full sentence).
+        Returns a short, grounding topic label to help users re-orient.
         """
-        system = "You summarize meeting conversation into a short current topic label for chat check-ins."
+        system = "You are a helpful meeting assistant. Your goal is to provide a clear, grounding topic label to help someone who might have spaced out immediately understand what is being discussed."
         user = (
             "Meeting context (agenda / goal). This may be empty:\n"
             f"{(meeting_context or '').strip()}\n\n"
@@ -237,7 +237,8 @@ class LLMClient:
             "  \"reason\": \"brief reason\"\n"
             "}\n"
             "Rules:\n"
-            "- Output a topic label, a couple sentences.\n"
+            "- Output a CLEAR, DESCRIPTIVE topic label (e.g., 'Discussing Q4 Budget' instead of just 'Budget').\n"
+            "- 1-2 sentences\n"
             "- If the transcript is too thin/unclear, lower confidence.\n"
         )
 
@@ -258,38 +259,68 @@ class LLMClient:
         agenda: str,
         current_topic: str,
         question: str,
-        transcript_excerpts: str,
+        transcript_text: str,
+        post_meeting: bool = False,
     ) -> QAResult:
-        """Answer a question using only provided transcript excerpts.
+        """Answer a question using the full meeting transcript.
 
-        The caller is responsible for retrieving relevant excerpts.
+        Uses a supportive, anxiety-relieving persona.
+        If post_meeting=True, uses past tense for completed meeting context.
         """
 
-        system = (
-            "You are a sarcastic-but-helpful Gen-Z meeting assistant. "
-            "Answer questions using ONLY the provided transcript excerpts. "
-            "If the answer is not in the excerpts, say you haven't heard it yet."
-        )
+        if post_meeting:
+            # Post-meeting prompt: meeting has ended
+            system = (
+                "You are a supportive, helpful meeting assistant. "
+                "The meeting has ended, and you have access to the complete transcript. "
+                "Your goal is to help the user understand what was discussed, what decisions were made, and what action items came up. "
+                "Be warm and clear in your responses."
+            )
 
-        user = (
-            "Meeting agenda/goal (may be empty):\n"
-            f"{(agenda or '').strip()}\n\n"
-            "Current inferred topic (may be empty):\n"
-            f"{(current_topic or '').strip()}\n\n"
-            "Question:\n"
-            f"{(question or '').strip()}\n\n"
-            "Transcript excerpts (most recent last):\n"
-            f"{transcript_excerpts}\n\n"
-            "Return JSON only:\n"
-            "{\n"
-            "  \"answer\": \"2 sentences max\",\n"
-            "  \"confidence\": number 0..1\n"
-            "}\n"
-            "Rules:\n"
-            "- Keep the answer to ~2 sentences.\n"
-            "- Don't invent details; if it's not in the excerpts, say you haven't heard it yet.\n"
-            "- Avoid targeting individuals; keep tone constructive.\n"
-        )
+            user = (
+                "Meeting context:\n"
+                f"- Agenda: {(agenda or 'Not specified').strip()}\n\n"
+                "Complete meeting transcript:\n"
+                f"{transcript_text}\n\n"
+                f"User's question about the meeting: {(question or '').strip()}\n\n"
+                "Return JSON only:\n"
+                "{\n"
+                "  \"answer\": \"your helpful response about what happened in the meeting, max 3 sentences\",\n"
+                "  \"confidence\": number 0..1\n"
+                "}\n"
+                "Guidelines:\n"
+                "- Use past tense since the meeting is over (e.g., 'They discussed...', 'The team decided...')\n"
+                "- Be clear and helpful\n"
+                "- Reference specific things people said when relevant\n"
+                "- If the topic wasn't discussed, say so kindly\n"
+            )
+        else:
+            # In-meeting prompt: meeting is ongoing
+            system = (
+                "You are a supportive, reassuring meeting assistant designed to help people with social anxiety or ADHD stay focused. "
+                "You have access to the full meeting transcript. "
+                "Your goal is to answer questions kindly and clearly. "
+                "NEVER make the user feel bad for missing something. Be non-judgmental and helpful."
+            )
+
+            user = (
+                "Meeting context:\n"
+                f"- Agenda: {(agenda or 'Not specified').strip()}\n"
+                f"- Current topic: {(current_topic or 'General discussion').strip()}\n\n"
+                "Full meeting transcript so far:\n"
+                f"{transcript_text}\n\n"
+                f"User's question: {(question or '').strip()}\n\n"
+                "Return JSON only:\n"
+                "{\n"
+                "  \"answer\": \"your supportive response, max 3 sentences\",\n"
+                "  \"confidence\": number 0..1\n"
+                "}\n"
+                "Guidelines:\n"
+                "- Be supportive but vary your response style naturally\n"
+                "- Use clear, simple language.\n"
+                "- Keep responses concise (1-3 sentences) but warm.\n"
+                "- If the answer isn't in the transcript, gently say you haven't heard that topic discussed yet.\n"
+            )
 
         obj = await self._chat_json(system=system, user=user)
 
@@ -297,8 +328,8 @@ class LLMClient:
         confidence = _clamp01(obj.get("confidence", 0.0))
 
         # Light hard limits for chat usability
-        if len(answer) > 350:
-            answer = answer[:347] + "..."
+        if len(answer) > 500:
+            answer = answer[:497] + "..."
 
         return QAResult(answer=answer, confidence=confidence)
 

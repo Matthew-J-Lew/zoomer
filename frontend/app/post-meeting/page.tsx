@@ -39,6 +39,12 @@ function PostMeetingContent() {
   const [summaryGenerated, setSummaryGenerated] = useState(false);
   const summaryRef = useRef<HTMLDivElement>(null);
 
+  // Q&A state
+  const [question, setQuestion] = useState("");
+  const [qaMessages, setQaMessages] = useState<{type: "question" | "answer"; content: string; confidence?: number}[]>([]);
+  const [isAskingQuestion, setIsAskingQuestion] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
   // Fetch recording URL
   useEffect(() => {
     if (!botId) {
@@ -185,6 +191,54 @@ function PostMeetingContent() {
     if (videoRef.current) {
       videoRef.current.currentTime = seconds;
       videoRef.current.play();
+    }
+  };
+
+  // Handle Q&A question submission
+  const handleAskQuestion = async () => {
+    const trimmedQuestion = question.trim();
+    if (!trimmedQuestion || isAskingQuestion || !botId) return;
+
+    // Add user's question to messages
+    setQaMessages(prev => [...prev, { type: "question", content: trimmedQuestion }]);
+    setQuestion("");
+    setIsAskingQuestion(true);
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/qa`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bot_id: botId,
+          question: trimmedQuestion,
+          post_meeting: true,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setQaMessages(prev => [...prev, {
+          type: "answer",
+          content: data.answer || "I couldn't find an answer to that.",
+          confidence: data.confidence,
+        }]);
+      } else {
+        setQaMessages(prev => [...prev, {
+          type: "answer",
+          content: "Sorry, something went wrong. Please try again.",
+          confidence: 0,
+        }]);
+      }
+    } catch (e) {
+      console.error("Q&A failed:", e);
+      setQaMessages(prev => [...prev, {
+        type: "answer",
+        content: "Sorry, I couldn't connect to the server. Please try again.",
+        confidence: 0,
+      }]);
+    } finally {
+      setIsAskingQuestion(false);
+      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
     }
   };
 
@@ -385,21 +439,77 @@ function PostMeetingContent() {
 
               {activeTab === "questions" && (
                  <div className="flex flex-col h-full">
-                    <div className="flex-1 overflow-y-auto mb-4 flex flex-col items-center justify-center text-muted-text text-sm">
-                        <svg className="w-12 h-12 mb-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                        </svg>
-                        <p className="mb-1">Have more questions about the meeting?</p>
-                        <p className="text-xs text-secondary-text">Ask the assistant about specific details or decisions.</p>
+                    {/* Messages area */}
+                    <div className="flex-1 overflow-y-auto mb-4 space-y-3">
+                      {qaMessages.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center h-full text-muted-text text-sm">
+                          <svg className="w-12 h-12 mb-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                          </svg>
+                          <p className="mb-1">Have questions about the meeting?</p>
+                          <p className="text-xs text-secondary-text">Ask about specific details, decisions, or action items.</p>
+                        </div>
+                      ) : (
+                        <>
+                          {qaMessages.map((msg, idx) => (
+                            <div
+                              key={idx}
+                              className={`rounded-xl px-4 py-3 text-sm ${
+                                msg.type === "question"
+                                  ? "bg-accent/10 text-primary-text ml-8"
+                                  : "bg-surface-subtle text-secondary-text mr-8"
+                              }`}
+                            >
+                              <p className="text-xs font-medium text-muted-text mb-1">
+                                {msg.type === "question" ? "You" : "Assistant"}
+                              </p>
+                              <p className="whitespace-pre-wrap">{msg.content}</p>
+                              {msg.type === "answer" && msg.confidence !== undefined && (
+                                <p className="text-xs text-muted-text mt-2">
+                                  Confidence: {Math.round(msg.confidence * 100)}%
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                          {isAskingQuestion && (
+                            <div className="bg-surface-subtle rounded-xl px-4 py-3 text-sm mr-8 flex items-center gap-2 text-muted-text">
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              <span>Thinking...</span>
+                            </div>
+                          )}
+                          <div ref={messagesEndRef} />
+                        </>
+                      )}
                     </div>
+                    {/* Input area */}
                     <div>
                        <textarea
-                          rows={3}
-                          placeholder="Ask about the meeting transcript..."
-                          className="w-full px-4 py-3 rounded-xl border border-border bg-surface-subtle text-primary-text placeholder-muted-text focus:outline-none focus:ring-2 focus:ring-focus transition-shadow resize-none text-sm mb-3"
+                         rows={3}
+                         placeholder="Ask about the meeting transcript..."
+                         value={question}
+                         onChange={(e) => setQuestion(e.target.value)}
+                         onKeyDown={(e) => {
+                           if (e.key === "Enter" && !e.shiftKey) {
+                             e.preventDefault();
+                             handleAskQuestion();
+                           }
+                         }}
+                         disabled={isAskingQuestion}
+                         className="w-full px-4 py-3 rounded-xl border border-border bg-surface-subtle text-primary-text placeholder-muted-text focus:outline-none focus:ring-2 focus:ring-focus transition-shadow resize-none text-sm mb-3 disabled:opacity-50"
                        />
-                       <Button className="w-full justify-center">
-                          Ask Question
+                       <Button 
+                         className="w-full justify-center" 
+                         onClick={handleAskQuestion}
+                         disabled={isAskingQuestion || !question.trim()}
+                       >
+                         {isAskingQuestion ? (
+                           <>
+                             <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                             Asking...
+                           </>
+                         ) : (
+                           "Ask Question"
+                         )}
                        </Button>
                     </div>
                  </div>

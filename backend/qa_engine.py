@@ -106,7 +106,7 @@ def _score_utterance(question: str, u: TranscriptUtterance) -> float:
     return base
 
 
-def _format_excerpts(excerpts: List[TranscriptUtterance], max_chars: int = 2200) -> str:
+def _format_excerpts(excerpts: List[TranscriptUtterance], max_chars: int = 25000) -> str:
     # Most recent last
     lines: List[str] = []
     for u in excerpts:
@@ -206,7 +206,7 @@ class QAEngine:
         chrono = [u for u in history if (u.ts, u.speaker, u.text) in top_set]
         return chrono
 
-    async def answer(self, st: MeetingState, question: str) -> Optional[QAResponse]:
+    async def answer(self, st: MeetingState, question: str, post_meeting: bool = False) -> Optional[QAResponse]:
         if not self.enabled:
             return None
 
@@ -218,25 +218,29 @@ class QAEngine:
                 used_excerpts=[],
             )
 
-        excerpts = self.retrieve(st, question)
-        excerpts_text = _format_excerpts(excerpts)
-        if len(excerpts_text.strip()) < self.min_context_chars:
+        # Use full transcript instead of selective retrieval
+        history = list(getattr(st, "transcript_history", []))
+        if not history or len(history) < 2:
             return QAResponse(
-                answer="I haven't heard enough yet to answer that. Try again after a bit more context.",
+                answer="I haven't heard enough of the conversation yet! Give me a bit more to work with.",
                 confidence=0.1,
                 used_excerpts=[],
             )
+
+        # Format full transcript
+        transcript_text = _format_excerpts(history)
 
         res: QAResult = await client.answer_question(
             agenda=st.agenda,
             current_topic=st.current_topic,
             question=question,
-            transcript_excerpts=excerpts_text,
+            transcript_text=transcript_text,
+            post_meeting=post_meeting,
         )
 
-        used_lines = [f"{u.speaker}: {u.text}" for u in excerpts]
+        used_lines = [f"{u.speaker}: {u.text}" for u in history[-5:]]  # Just show last 5 for reference
         answer = (res.answer or "").strip()
         if not answer:
-            answer = "I don't have a clean answer yet based on what I've heard so far."
+            answer = "Hmm, I'm not quite sure about that based on what I've heard so far."
 
         return QAResponse(answer=answer, confidence=res.confidence, used_excerpts=used_lines)
