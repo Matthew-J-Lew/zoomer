@@ -26,6 +26,8 @@ function MeetingPageContent() {
   const [error, setError] = useState<string | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [currentTopic, setCurrentTopic] = useState<string>("");
+  const [botStatus, setBotStatus] = useState<string>("joining");
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Read bot_id and topic updates setting from URL params
@@ -64,6 +66,35 @@ function MeetingPageContent() {
     return () => clearInterval(interval);
   }, [botId, topicUpdatesEnabled]);
 
+  // Poll for bot status
+  useEffect(() => {
+    if (!botId) return;
+
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/meeting/${botId}/status`);
+        if (res.ok) {
+          const data = await res.json();
+          setBotStatus(data.status || "joining");
+          
+          // Auto-redirect when meeting ends
+          if (data.status === "done") {
+            router.push(`/post-meeting?botId=${botId}`);
+          }
+        }
+      } catch (e) {
+        console.error("Failed to fetch status:", e);
+      }
+    };
+
+    // Initial fetch
+    fetchStatus();
+
+    // Poll every 5 seconds
+    const interval = setInterval(fetchStatus, 5000);
+    return () => clearInterval(interval);
+  }, [botId, router]);
+
   const handleEndMeeting = () => {
     router.push("/post-meeting");
   };
@@ -72,9 +103,18 @@ function MeetingPageContent() {
     setShowConfirmModal(true);
   };
 
-  const handleConfirmDisconnect = () => {
+  const handleConfirmDisconnect = async () => {
+    setIsDisconnecting(true);
+    try {
+      // Call the leave endpoint
+      await fetch(`${API_BASE_URL}/meeting/${botId}/leave`, {
+        method: "POST",
+      });
+    } catch (e) {
+      console.error("Failed to disconnect:", e);
+    }
     setShowConfirmModal(false);
-    handleEndMeeting();
+    router.push(`/post-meeting?botId=${botId}`);
   };
 
   const handleAskQuestion = async () => {
@@ -160,9 +200,17 @@ function MeetingPageContent() {
               </Button>
               <button 
                 onClick={handleConfirmDisconnect}
-                className="flex-1 px-4 py-2.5 rounded-xl bg-error text-white font-medium text-sm hover:bg-error/90 transition-colors"
+                disabled={isDisconnecting}
+                className="flex-1 px-4 py-2.5 rounded-xl bg-error text-white font-medium text-sm hover:bg-error/90 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
               >
-                Disconnect
+                {isDisconnecting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Disconnecting...
+                  </>
+                ) : (
+                  "Disconnect"
+                )}
               </button>
             </div>
           </div>
@@ -174,10 +222,29 @@ function MeetingPageContent() {
         {/* Header / Status */}
         <header className="flex justify-between items-center mb-8">
           <div className="flex items-center gap-3">
-             <div className="flex items-center gap-3 bg-surface border border-border px-4 py-2 rounded-full shadow-sm">
-                <div className="w-2.5 h-2.5 rounded-full bg-success animate-pulse shadow-[0_0_8px_var(--color-success)]"></div>
-                <span className="text-sm font-medium text-success">
-                  Connected
+             <div className={`flex items-center gap-3 bg-surface border border-border px-4 py-2 rounded-full shadow-sm`}>
+                <div className={`w-2.5 h-2.5 rounded-full ${
+                  botStatus === "in_call" 
+                    ? "bg-success animate-pulse shadow-[0_0_8px_var(--color-success)]" 
+                    : botStatus === "joining" 
+                    ? "bg-warning animate-pulse shadow-[0_0_8px_var(--color-warning)]" 
+                    : botStatus === "error" 
+                    ? "bg-error" 
+                    : "bg-muted"
+                }`}></div>
+                <span className={`text-sm font-medium ${
+                  botStatus === "in_call" 
+                    ? "text-success" 
+                    : botStatus === "joining" 
+                    ? "text-warning" 
+                    : botStatus === "error" 
+                    ? "text-error" 
+                    : "text-muted-text"
+                }`}>
+                  {botStatus === "in_call" && "Connected"}
+                  {botStatus === "joining" && "Connecting..."}
+                  {botStatus === "error" && "Connection Error"}
+                  {botStatus === "done" && "Meeting Ended"}
                 </span>
              </div>
           </div>
