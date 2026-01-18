@@ -231,9 +231,7 @@ class LLMClient:
             "  \"reason\": \"brief reason\"\n"
             "}\n"
             "Rules:\n"
-            "- Output a topic label, not a paragraph (e.g., 'Assigning frontend tasks' / 'Deciding demo flow').\n"
-            "- Keep topic <= 80 characters.\n"
-            "- Avoid using people's names in the topic.\n"
+            "- Output a topic label, a couple sentences.\n"
             "- If the transcript is too thin/unclear, lower confidence.\n"
         )
 
