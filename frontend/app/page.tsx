@@ -10,43 +10,73 @@ export default function Home() {
   const [meetingLink, setMeetingLink] = useState("");
   const [topic, setTopic] = useState("");
   const [topicUpdatesEnabled, setTopicUpdatesEnabled] = useState(true);
-  const [updateInterval, setUpdateInterval] = useState(60); // Default 60 seconds
+  const [updateInterval, setUpdateInterval] = useState(60);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Format seconds to readable string
   const formatInterval = (seconds: number) => {
     if (seconds < 60) return `${seconds} seconds`;
     const minutes = seconds / 60;
     return minutes === 1 ? "1 minute" : `${minutes} minutes`;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const params = new URLSearchParams({
-      topicUpdates: topicUpdatesEnabled.toString(),
-      interval: updateInterval.toString(),
-    });
-    router.push(`/meeting?${params.toString()}`)
+    setError(null);
+    setIsSubmitting(true);
+
+    try {
+      const backendBase = (process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000").replace(/\/$/, "");
+
+      const resp = await fetch(`${backendBase}/start-meeting-bot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          meeting_url: meetingLink,
+          agenda: topic || undefined,
+        }),
+      });
+
+      if (!resp.ok) {
+        let detail: any = null;
+        try { detail = await resp.json(); } catch {}
+        const msg =
+          (detail && (detail.detail || detail.error || JSON.stringify(detail))) ||
+          `Request failed (${resp.status})`;
+        throw new Error(typeof msg === "string" ? msg : JSON.stringify(msg));
+      }
+
+      const data: { bot_id: string } = await resp.json();
+
+      const params = new URLSearchParams({
+        botId: data.bot_id,
+        meetingUrl: meetingLink,
+        topicUpdates: topicUpdatesEnabled.toString(),
+        interval: updateInterval.toString(),
+      });
+
+      router.push(`/meeting?${params.toString()}`);
+    } catch (err: any) {
+      setError(err?.message || "Failed to start the meeting bot.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 bg-background">
       <main className="w-full max-w-lg">
         <div className="text-center mb-10">
-          <h1 className="text-6xl font-bold text-primary-text mb-2 tracking-tight" style={{ fontFamily: 'var(--font-quicksand)' }}>
+          <h1 className="text-6xl font-bold text-primary-text mb-2 tracking-tight" style={{ fontFamily: "var(--font-quicksand)" }}>
             Zoomer
           </h1>
-          <p className="text-secondary-text text-lg">
-            Your accessible meeting assistant
-          </p>
+          <p className="text-secondary-text text-lg">Your accessible meeting assistant</p>
         </div>
 
         <Card>
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
-              <label
-                htmlFor="meeting-link"
-                className="block text-sm font-medium text-primary-text mb-2"
-              >
+              <label htmlFor="meeting-link" className="block text-sm font-medium text-primary-text mb-2">
                 Meeting Link
               </label>
               <input
@@ -61,29 +91,22 @@ export default function Home() {
             </div>
 
             <div>
-              <label
-                htmlFor="topic"
-                className="block text-sm font-medium text-primary-text mb-2"
-              >
+              <label htmlFor="topic" className="block text-sm font-medium text-primary-text mb-2">
                 Meeting Topic / Context
               </label>
               <textarea
                 id="topic"
                 rows={3}
-                placeholder="Weekly sync with the design team..."
+                placeholder="Demo, talk about anything..."
                 value={topic}
                 onChange={(e) => setTopic(e.target.value)}
                 className="w-full px-4 py-3 rounded-xl border border-border bg-surface-subtle text-primary-text placeholder-muted-text focus:outline-none focus:ring-2 focus:ring-focus transition-shadow resize-none"
               />
             </div>
 
-            {/* Topic Updates Toggle */}
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <label
-                  htmlFor="topic-updates"
-                  className="text-sm font-medium text-primary-text"
-                >
+                <label htmlFor="topic-updates" className="text-sm font-medium text-primary-text">
                   Real-time topic updates
                 </label>
                 <button
@@ -104,19 +127,13 @@ export default function Home() {
                 </button>
               </div>
 
-              {/* Interval Slider - only shown when updates are enabled */}
               {topicUpdatesEnabled && (
                 <div className="space-y-2">
                   <div className="flex justify-between items-center">
-                    <label
-                      htmlFor="update-interval"
-                      className="text-sm text-secondary-text"
-                    >
+                    <label htmlFor="update-interval" className="text-sm text-secondary-text">
                       Update interval
                     </label>
-                    <span className="text-sm font-medium text-accent">
-                      {formatInterval(updateInterval)}
-                    </span>
+                    <span className="text-sm font-medium text-accent">{formatInterval(updateInterval)}</span>
                   </div>
                   <input
                     id="update-interval"
@@ -136,8 +153,14 @@ export default function Home() {
               )}
             </div>
 
-            <Button type="submit" className="w-full justify-center">
-              Connect Assistant
+            {error && (
+              <div role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-primary-text">
+                {error}
+              </div>
+            )}
+
+            <Button type="submit" className="w-full justify-center" disabled={isSubmitting}>
+              {isSubmitting ? "Connecting..." : "Connect Assistant"}
             </Button>
           </form>
         </Card>

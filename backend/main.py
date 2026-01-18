@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Request
+from starlette import status
+
 from pydantic import BaseModel, HttpUrl
 
 # Optional signature verification (Svix-style headers)
@@ -18,6 +22,20 @@ from store import append_final_utterance, get_or_create_meeting, remember_partic
 from topic_tracker import TopicTracker
 
 app = FastAPI(title="Gen-Z Meeting Moderator (MVP: Topic Check-ins)")
+# --- CORS (needed for Next.js dev server calling FastAPI from the browser) ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# ---------------------------------------------------------------------------
+
+
 
 RECALL_API_KEY = os.getenv("RECALL_API_KEY", "")
 RECALL_BASE_URL = os.getenv("RECALL_BASE_URL", "https://us-west-2.recall.ai").rstrip("/")
