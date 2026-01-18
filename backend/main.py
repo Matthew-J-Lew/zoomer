@@ -18,7 +18,7 @@ from pydantic import BaseModel, HttpUrl
 from svix.webhooks import Webhook, WebhookVerificationError
 
 from qa_engine import QAEngine
-from store import append_final_utterance, get_or_create_meeting, remember_participant, set_agenda
+from store import append_final_utterance, get_or_create_meeting, remember_participant, set_agenda, set_status
 from topic_tracker import TopicTracker
 
 app = FastAPI(title="Gen-Z Meeting Moderator (MVP: Topic Check-ins)")
@@ -301,6 +301,45 @@ async def get_topic(bot_id: str):
     }
 
 
+@app.get("/meeting/{bot_id}/status")
+async def get_status(bot_id: str):
+    """Return the current status of the bot.
+
+    Status values: "joining", "in_call", "done", "error"
+    """
+    st = get_or_create_meeting(bot_id)
+    return {
+        "bot_id": bot_id,
+        "status": st.status,
+        "topic": st.current_topic,
+        "status_updated_at": st.status_updated_at,
+    }
+
+
+@app.post("/meeting/{bot_id}/leave")
+async def leave_meeting(bot_id: str):
+    """Tell the bot to leave the meeting.
+
+    This calls Recall.ai's leave_call endpoint.
+    """
+    if not RECALL_API_KEY:
+        raise HTTPException(500, "RECALL_API_KEY not set.")
+
+    url = f"{RECALL_BASE_URL}/api/v1/bot/{bot_id}/leave_call/"
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(url, headers=_auth_headers())
+        if resp.status_code >= 300:
+            print(f"[leave_call] failed: {resp.status_code} {resp.text}")
+            raise HTTPException(
+                status_code=resp.status_code,
+                detail={"error": "Failed to leave call", "body": resp.text},
+            )
+
+    # Update local state
+    set_status(bot_id, "done")
+    return {"bot_id": bot_id, "status": "done"}
+
+
 @app.post("/recall/webhook/realtime/", status_code=status.HTTP_204_NO_CONTENT)
 async def recall_webhook_realtime(request: Request):
     raw = await request.body()
@@ -338,6 +377,12 @@ async def recall_webhook_realtime(request: Request):
         # transcript.data (finalized)
         print(f"[final] ({bot_id}) {speaker}: {text}")
         append_final_utterance(bot_id, speaker=speaker, text=text, ts=time.time())
+
+        # Update status to in_call when we receive transcript data
+        # (This ensures status works without the bot_status webhook)
+        st = get_or_create_meeting(bot_id)
+        if st.status == "joining":
+            set_status(bot_id, "in_call")
 
         
 # Save transcript line
@@ -456,5 +501,52 @@ async def recall_webhook_realtime(request: Request):
 
         asyncio.create_task(_handle_question())
         return
+
+    return
+
+
+@app.post("/recall/webhook/bot_status/", status_code=status.HTTP_204_NO_CONTENT)
+async def recall_webhook_bot_status(request: Request):
+    """Handle bot status change webhooks from Recall.ai.
+
+    These webhooks are configured separately in the Recall dashboard.
+    Events include: joining_call, in_call, done, fatal, etc.
+    """
+    raw = await request.body()
+    headers = dict(request.headers)
+
+    if RECALL_WEBHOOK_SECRET:
+        try:
+            wh = Webhook(RECALL_WEBHOOK_SECRET)
+            payload: Dict[str, Any] = wh.verify(raw, headers)  # type: ignore
+        except WebhookVerificationError:
+            raise HTTPException(status_code=400, detail="Invalid webhook signature")
+    else:
+        token = request.query_params.get("token")
+        if WEBHOOK_TOKEN and token != WEBHOOK_TOKEN:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        payload = await request.json()
+
+    event = payload.get("event", "")
+    data = payload.get("data") or {}
+    bot_id = data.get("bot_id") or (data.get("bot") or {}).get("id") or "unknown"
+
+    print(f"[bot_status] event={event} bot_id={bot_id}")
+
+    # Map Recall events to our status values
+    status_map = {
+        "bot.joining_call": "joining",
+        "bot.in_call_not_recording": "in_call",
+        "bot.in_call_recording": "in_call",
+        "bot.in_waiting_room": "joining",
+        "bot.call_ended": "done",
+        "bot.done": "done",
+        "bot.fatal": "error",
+    }
+
+    new_status = status_map.get(event)
+    if new_status and bot_id != "unknown":
+        set_status(bot_id, new_status)
+        print(f"[bot_status] Updated {bot_id} status to {new_status}")
 
     return

@@ -90,6 +90,10 @@ class MeetingState:
     strike_count: int = 0
     strike_expires_ts: float = 0.0
 
+    # Bot lifecycle status: "joining", "in_call", "done", "error"
+    status: str = "joining"
+    status_updated_at: float = 0.0
+
 
 # In-memory meeting state store
 MEETINGS: Dict[str, MeetingState] = {}
@@ -110,6 +114,14 @@ def get_or_create_meeting(bot_id: str) -> MeetingState:
 def set_agenda(bot_id: str, agenda: str) -> MeetingState:
     st = get_or_create_meeting(bot_id)
     st.agenda = (agenda or "").strip()
+    return st
+
+
+def set_status(bot_id: str, status: str) -> MeetingState:
+    """Update the bot lifecycle status."""
+    st = get_or_create_meeting(bot_id)
+    st.status = status
+    st.status_updated_at = time.time()
     return st
 
 
