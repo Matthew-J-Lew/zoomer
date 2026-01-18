@@ -14,7 +14,7 @@ const quicksand = Quicksand({
 });
 
 export const metadata: Metadata = {
-  title: "Zoomer",
+  title: "zoomer",
   description: "Your accessible meeting assistant",
 };
 

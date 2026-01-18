@@ -276,15 +276,15 @@ function MeetingPageContent() {
 
           {/* Topic Box - only shown when topic updates are enabled */}
           {topicUpdatesEnabled && (
-            <div className="mt-8">
-              <div className="bg-surface border border-border rounded-2xl px-8 py-6 shadow-lg max-w-xl">
-                <div className="flex items-center justify-center gap-2 mb-4">
-                  <Sparkles className="w-4 h-4 text-accent" />
+            <div className="mt-8 px-4 w-full">
+              <div className="bg-surface border border-border rounded-2xl px-6 py-5 shadow-lg">
+                <div className="flex items-center justify-center gap-2 mb-3">
+                  <Sparkles className="w-4 h-4 text-accent flex-shrink-0" />
                   <h2 className="text-sm uppercase tracking-wider text-muted-text font-semibold">
                     Current Topic
                   </h2>
                 </div>
-                <p className="text-lg sm:text-xl font-medium text-primary-text leading-relaxed">
+                <p className="text-sm sm:text-base font-medium text-primary-text leading-relaxed whitespace-normal overflow-visible">
                   {currentTopic || (
                     <span className="text-muted-text italic">Listening for topic updates...</span>
                   )}

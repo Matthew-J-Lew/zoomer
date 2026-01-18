@@ -68,7 +68,7 @@ export default function Home() {
       <main className="w-full max-w-lg">
         <div className="text-center mb-10">
           <h1 className="text-6xl font-bold text-primary-text mb-2 tracking-tight" style={{ fontFamily: "var(--font-quicksand)" }}>
-            Zoomer
+            zoomer
           </h1>
           <p className="text-secondary-text text-lg">Your accessible meeting assistant</p>
         </div>

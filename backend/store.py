@@ -94,6 +94,11 @@ class MeetingState:
     status: str = "joining"
     status_updated_at: float = 0.0
 
+    # Recording URL (from Recall.ai after meeting ends)
+    recording_url: str = ""
+
+    # Recording start time (for calculating relative timestamps)
+    recording_started_at: float = 0.0
 
 # In-memory meeting state store
 MEETINGS: Dict[str, MeetingState] = {}

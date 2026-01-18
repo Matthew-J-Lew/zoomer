@@ -131,6 +131,7 @@ async def recall_create_bot(meeting_url: str, webhook_url: str) -> Dict[str, Any
                     }
                 }
             },
+            "video_mixed_mp4": {},  # Enable MP4 recording
             "realtime_endpoints": [
                 {
                     "type": "webhook",
@@ -170,6 +171,39 @@ async def recall_send_chat_message(bot_id: str, message: str) -> None:
         print("[send_chat_message] status:", resp.status_code, "body:", resp.text[:300])
         if resp.status_code >= 300:
             print("[send_chat_message] failed:", resp.status_code, resp.text)
+
+
+async def recall_fetch_recording_url(bot_id: str) -> Optional[str]:
+    """Fetch the recording download URL from Recall.ai after meeting ends."""
+    url = f"{RECALL_BASE_URL}/api/v1/bot/{bot_id}/"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(url, headers=_auth_headers())
+            if resp.status_code >= 300:
+                print(f"[fetch_recording] failed: {resp.status_code} {resp.text}")
+                return None
+            
+            data = resp.json()
+            recordings = data.get("recordings") or []
+            if not recordings:
+                print(f"[fetch_recording] No recordings found for bot {bot_id}")
+                return None
+            
+            # Get the first recording's video_mixed download URL
+            media_shortcuts = recordings[0].get("media_shortcuts") or {}
+            video_mixed = media_shortcuts.get("video_mixed") or {}
+            video_data = video_mixed.get("data") or {}
+            download_url = video_data.get("download_url")
+            
+            if download_url:
+                print(f"[fetch_recording] Got recording URL for bot {bot_id}")
+            else:
+                print(f"[fetch_recording] Recording not ready yet for bot {bot_id}")
+            
+            return download_url
+    except Exception as e:
+        print(f"[fetch_recording] error: {repr(e)}")
+        return None
 
 
 def words_to_text(words: list[dict]) -> str:
@@ -313,6 +347,29 @@ async def get_status(bot_id: str):
         "status": st.status,
         "topic": st.current_topic,
         "status_updated_at": st.status_updated_at,
+        "recording_url": st.recording_url,
+    }
+
+
+@app.get("/meeting/{bot_id}/transcript")
+async def get_transcript(bot_id: str):
+    """Return the full transcript for a meeting.
+
+    Includes recording_started_at for calculating relative timestamps.
+    """
+    st = get_or_create_meeting(bot_id)
+    transcript = [
+        {
+            "ts": u.ts,
+            "speaker": u.speaker,
+            "text": u.text,
+        }
+        for u in st.transcript_history
+    ]
+    return {
+        "bot_id": bot_id,
+        "recording_started_at": st.recording_started_at,
+        "transcript": transcript,
     }
 
 
@@ -383,9 +440,14 @@ async def recall_webhook_realtime(request: Request):
         st = get_or_create_meeting(bot_id)
         if st.status == "joining":
             set_status(bot_id, "in_call")
+        
+        # Track recording start time (first transcript = recording start)
+        if st.recording_started_at == 0.0:
+            st.recording_started_at = time.time()
+            print(f"[recording] Started at {st.recording_started_at} for bot {bot_id}")
 
         
-# Save transcript line
+        # Save transcript line (per-meeting file)
         line = {
             "ts": time.time(),
             "bot_id": bot_id,
@@ -394,7 +456,8 @@ async def recall_webhook_realtime(request: Request):
             "text": text,
             "raw_event": event,
         }
-        with open(TRANSCRIPT_OUTFILE, "a", encoding="utf-8") as f:
+        transcript_file = f"transcript_{bot_id}.jsonl"
+        with open(transcript_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(line, ensure_ascii=False) + "\n")
 
         # Keep rolling buffers
@@ -548,5 +611,21 @@ async def recall_webhook_bot_status(request: Request):
     if new_status and bot_id != "unknown":
         set_status(bot_id, new_status)
         print(f"[bot_status] Updated {bot_id} status to {new_status}")
+
+        # When meeting ends, fetch the recording URL
+        if new_status == "done":
+            async def _fetch_recording():
+                try:
+                    # Give Recall a moment to process the recording
+                    await asyncio.sleep(2)
+                    recording_url = await recall_fetch_recording_url(bot_id)
+                    if recording_url:
+                        st = get_or_create_meeting(bot_id)
+                        st.recording_url = recording_url
+                        print(f"[bot_status] Stored recording URL for {bot_id}")
+                except Exception as e:
+                    print(f"[bot_status] Error fetching recording: {repr(e)}")
+
+            asyncio.create_task(_fetch_recording())
 
     return

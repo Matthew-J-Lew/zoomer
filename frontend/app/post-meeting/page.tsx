@@ -1,63 +1,163 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect, Suspense, useRef } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
+import { Loader2 } from "lucide-react";
 
-export default function PostMeetingPage() {
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+interface TranscriptItem {
+  ts: number;
+  speaker: string;
+  text: string;
+}
+
+function PostMeetingContent() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const botId = searchParams.get("botId") || "";
+  const videoRef = useRef<HTMLVideoElement>(null);
+  
   const [activeTab, setActiveTab] = useState<"transcript" | "summary" | "questions">("transcript");
-  const [currentTime, setCurrentTime] = useState("00:00");
-  const [language, setLanguage] = useState<"en" | "es">("en");
+  const [recordingUrl, setRecordingUrl] = useState<string>("");
+  const [isLoadingRecording, setIsLoadingRecording] = useState(true);
+  const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
+  const [recordingStartedAt, setRecordingStartedAt] = useState<number>(0);
+  const [isLoadingTranscript, setIsLoadingTranscript] = useState(true);
 
-  const mockTranscriptEn = [
-    { time: "00:15", speaker: "Alex", text: "Okay, let's get started with the weekly sync." },
-    { time: "00:22", speaker: "Sarah", text: "I have the updates on the user retention strategies." },
-    { time: "00:45", speaker: "Alex", text: "Great, please go ahead." },
-    { time: "01:10", speaker: "Sarah", text: "We've seen a 15% increase in engagement since the new feature rollout." },
-    { time: "02:30", speaker: "Mike", text: "That's fantastic news. What about the Q3 roadmap?" },
-  ];
+  // Fetch recording URL
+  useEffect(() => {
+    if (!botId) {
+      setIsLoadingRecording(false);
+      return;
+    }
 
-  const mockTranscriptEs = [
-    { time: "00:15", speaker: "Alex", text: "Bien, comencemos con la sincronización semanal." },
-    { time: "00:22", speaker: "Sarah", text: "Tengo las actualizaciones sobre las estrategias de retención de usuarios." },
-    { time: "00:45", speaker: "Alex", text: "Genial, por favor continúa." },
-    { time: "01:10", speaker: "Sarah", text: "Hemos visto un aumento del 15% en la participación desde el lanzamiento de la nueva función." },
-    { time: "02:30", speaker: "Mike", text: "Esa es una noticia fantástica. ¿Qué pasa con la hoja de ruta del Q3?" },
-  ];
+    const fetchRecording = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/meeting/${botId}/status`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.recording_url) {
+            setRecordingUrl(data.recording_url);
+            setIsLoadingRecording(false);
+          }
+        }
+      } catch (e) {
+        console.error("Failed to fetch recording:", e);
+      }
+    };
 
-  const transcript = language === "en" ? mockTranscriptEn : mockTranscriptEs;
+    fetchRecording();
+    const interval = setInterval(() => {
+      if (!recordingUrl) fetchRecording();
+    }, 5000);
+    const timeout = setTimeout(() => {
+      setIsLoadingRecording(false);
+      clearInterval(interval);
+    }, 120000);
 
-  const handleTranscriptClick = (time: string) => {
-    setCurrentTime(time);
-    // In a real app, this would seek the video player
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+  }, [botId, recordingUrl]);
+
+  // Fetch transcript
+  useEffect(() => {
+    if (!botId) {
+      setIsLoadingTranscript(false);
+      return;
+    }
+
+    const fetchTranscript = async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/meeting/${botId}/transcript`);
+        if (res.ok) {
+          const data = await res.json();
+          setTranscript(data.transcript || []);
+          setRecordingStartedAt(data.recording_started_at || 0);
+        }
+      } catch (e) {
+        console.error("Failed to fetch transcript:", e);
+      } finally {
+        setIsLoadingTranscript(false);
+      }
+    };
+
+    fetchTranscript();
+  }, [botId]);
+
+  // Format relative timestamp as MM:SS
+  const formatTime = (ts: number): string => {
+    if (recordingStartedAt === 0) return "00:00";
+    const relativeSeconds = Math.max(0, ts - recordingStartedAt);
+    const minutes = Math.floor(relativeSeconds / 60);
+    const seconds = Math.floor(relativeSeconds % 60);
+    return `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+  };
+
+  // Calculate relative seconds for seeking
+  const getRelativeSeconds = (ts: number): number => {
+    if (recordingStartedAt === 0) return 0;
+    return Math.max(0, ts - recordingStartedAt);
+  };
+
+  const handleTranscriptClick = (ts: number) => {
+    const seconds = getRelativeSeconds(ts);
+    if (videoRef.current) {
+      videoRef.current.currentTime = seconds;
+      videoRef.current.play();
+    }
   };
 
   return (
-    <div className="min-h-screen bg-background p-6 flex flex-col h-screen overflow-hidden">
+    <div className="h-screen bg-background p-6 flex flex-col">
       <header className="mb-6 flex justify-between items-center">
         <div>
            <h1 className="text-2xl font-semibold text-primary-text">Meeting Recap</h1>
            <p className="text-secondary-text text-sm">Weekly Sync with Design Team • Oct 24, 2025</p>
         </div>
-        <Button variant="secondary" onClick={() => window.print()}>Export Report</Button>
+        <div className="flex gap-3">
+          <Button variant="secondary" onClick={() => router.push("/")}>New Meeting</Button>
+          <Button variant="secondary" onClick={() => window.print()}>Export Report</Button>
+        </div>
       </header>
 
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-6 overflow-hidden">
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-6 min-h-0">
         {/* Left Column: Recording Canvas */}
-        <div className="lg:col-span-2 flex flex-col gap-4">
-           <div className="bg-black rounded-2xl flex-1 flex items-center justify-center relative overflow-hidden shadow-sm group">
-              {/* Mock Video Player */}
-              <div className="absolute inset-0 bg-neutral-900 opacity-50"></div>
-              <div className="text-center z-10">
-                 <div className="w-16 h-16 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center mx-auto mb-4 cursor-pointer hover:bg-white/30 transition-all">
-                    <svg className="w-8 h-8 text-white ml-1" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                 </div>
-                 <p className="text-white font-medium text-lg">Watch Recording</p>
-                 <p className="text-white/70 text-sm mt-1">{currentTime} / 45:00</p>
-              </div>
+        <div className="lg:col-span-2 flex flex-col gap-4 min-h-0">
+           <div className="bg-black flex-1 min-h-0 flex items-center justify-center relative overflow-hidden shadow-sm group">
+              {recordingUrl ? (
+                <video 
+                  ref={videoRef}
+                  className="w-full h-full object-contain"
+                  controls
+                  src={recordingUrl}
+                >
+                  Your browser does not support the video tag.
+                </video>
+              ) : isLoadingRecording ? (
+                <div className="text-center z-10">
+                  <Loader2 className="w-12 h-12 text-white animate-spin mx-auto mb-4" />
+                  <p className="text-white font-medium text-lg">Processing Recording...</p>
+                  <p className="text-white/70 text-sm mt-1">This may take a few moments</p>
+                </div>
+              ) : (
+                <div className="text-center z-10">
+                  <div className="w-16 h-16 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center mx-auto mb-4">
+                    <svg className="w-8 h-8 text-white/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  </div>
+                  <p className="text-white/70 font-medium text-lg">Recording Not Available</p>
+                  <p className="text-white/50 text-sm mt-1">The recording may still be processing</p>
+                </div>
+              )}
            </div>
            
-           <Card className="p-4 flex items-center justify-between">
+           <Card className="p-4 flex items-center justify-between flex-shrink-0">
               <div className="flex items-center gap-4">
                  <div className="w-10 h-10 rounded-full bg-accent-soft flex items-center justify-center text-accent-primary font-bold">A</div>
                  <div>
@@ -76,7 +176,7 @@ export default function PostMeetingPage() {
         </div>
 
         {/* Right Column: Tabs */}
-        <Card className="flex flex-col h-full overflow-hidden p-0 relative">
+        <Card className="flex flex-col min-h-0 overflow-hidden p-0 relative">
            <div className="flex border-b border-border pr-20">
               <button 
                 onClick={() => setActiveTab("transcript")}
@@ -98,42 +198,30 @@ export default function PostMeetingPage() {
               </button>
            </div>
 
-           {activeTab === 'transcript' && (
-              <div className="px-6 pt-4 pb-0">
-                 <div className="relative inline-block">
-                    <svg className="w-4 h-4 text-secondary-text absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <select 
-                       value={language}
-                       onChange={(e) => setLanguage(e.target.value as "en" | "es")}
-                       className="bg-surface-subtle border border-border text-secondary-text text-sm rounded-lg pl-9 pr-8 py-2 focus:outline-none focus:ring-2 focus:ring-focus cursor-pointer hover:border-accent-primary transition-colors appearance-none"
-                       style={{ backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`, backgroundPosition: "right 0.5rem center", backgroundRepeat: "no-repeat", backgroundSize: "1.5em 1.5em" }}
-                     >
-                       <option value="en">English</option>
-                       <option value="es">Spanish</option>
-                    </select>
-                 </div>
-              </div>
-           )}
-           
-           <div className="flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-surface-subtle scrollbar-track-transparent">
+           <div className="flex-1 min-h-0 overflow-y-auto p-4 pb-8 scrollbar-thin scrollbar-thumb-surface-subtle scrollbar-track-transparent">
               {activeTab === 'transcript' && (
                  <div className="space-y-1">
-
-                    {transcript.map((item, index) => (
+                    {isLoadingTranscript ? (
+                      <div className="flex items-center justify-center py-8">
+                        <Loader2 className="w-6 h-6 animate-spin text-muted-text" />
+                      </div>
+                    ) : transcript.length === 0 ? (
+                      <p className="text-muted-text text-sm text-center py-8">No transcript available</p>
+                    ) : (
+                      transcript.map((item, index) => (
                        <div 
                          key={index} 
-                         onClick={() => handleTranscriptClick(item.time)}
+                         onClick={() => handleTranscriptClick(item.ts)}
                          className="p-2 rounded-lg hover:bg-surface-subtle cursor-pointer transition-colors group"
                        >
                           <div className="flex justify-between items-baseline mb-1">
                              <span className="font-semibold text-sm text-primary-text">{item.speaker}</span>
-                             <span className="text-xs text-muted-text font-mono group-hover:text-accent-primary transition-colors">{item.time}</span>
+                             <span className="text-xs text-muted-text font-mono group-hover:text-accent-primary transition-colors">{formatTime(item.ts)}</span>
                           </div>
                           <p className="text-secondary-text text-sm leading-relaxed">{item.text}</p>
                        </div>
-                    ))}
+                      ))
+                    )}
                  </div>
               )}
 
@@ -188,5 +276,17 @@ export default function PostMeetingPage() {
         </Card>
       </div>
     </div>
+  );
+}
+
+export default function PostMeetingPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Loader2 className="w-8 h-8 animate-spin text-accent" />
+      </div>
+    }>
+      <PostMeetingContent />
+    </Suspense>
   );
 }
