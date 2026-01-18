@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Loader2 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -31,6 +32,12 @@ function PostMeetingContent() {
   const [language, setLanguage] = useState<string>("en");
   const [translatedTranscript, setTranslatedTranscript] = useState<TranscriptItem[]>([]);
   const [isTranslating, setIsTranslating] = useState(false);
+
+  // Summary state
+  const [summary, setSummary] = useState<string>("");
+  const [isLoadingSummary, setIsLoadingSummary] = useState(false);
+  const [summaryGenerated, setSummaryGenerated] = useState(false);
+  const summaryRef = useRef<HTMLDivElement>(null);
 
   // Fetch recording URL
   useEffect(() => {
@@ -92,6 +99,29 @@ function PostMeetingContent() {
     };
 
     fetchTranscript();
+  }, [botId]);
+
+  // Auto-fetch summary when transcript is available
+  useEffect(() => {
+    if (!botId) return;
+
+    const fetchSummary = async () => {
+      setIsLoadingSummary(true);
+      try {
+        const res = await fetch(`${API_BASE_URL}/meeting/${botId}/summary`);
+        if (res.ok) {
+          const data = await res.json();
+          setSummary(data.summary || "");
+          setSummaryGenerated(true);
+        }
+      } catch (e) {
+        console.error("Failed to generate summary:", e);
+      } finally {
+        setIsLoadingSummary(false);
+      }
+    };
+
+    fetchSummary();
   }, [botId]);
 
   // Translate transcript when language changes
@@ -202,28 +232,11 @@ function PostMeetingContent() {
                 </div>
               )}
            </div>
-           
-           <Card className="p-4 flex items-center justify-between flex-shrink-0">
-              <div className="flex items-center gap-4">
-                 <div className="w-10 h-10 rounded-full bg-accent-soft flex items-center justify-center text-accent-primary font-bold">A</div>
-                 <div>
-                    <p className="text-sm font-semibold text-primary-text">Alex (Host)</p>
-                    <p className="text-xs text-secondary-text">Product Manager</p>
-                 </div>
-              </div>
-               <div className="flex items-center gap-4">
-                 <div className="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center text-orange-600 font-bold">S</div>
-                 <div>
-                    <p className="text-sm font-semibold text-primary-text">Sarah</p>
-                    <p className="text-xs text-secondary-text">Lead Designer</p>
-                 </div>
-              </div>
-           </Card>
         </div>
 
         {/* Right Column: Tabs */}
         <Card className="flex flex-col min-h-0 overflow-hidden p-0 relative">
-           <div className="flex border-b border-border pr-20">
+           <div className="flex justify-center border-b border-border">
               <button 
                 onClick={() => setActiveTab("transcript")}
                 className={`flex-1 py-3 text-sm font-medium transition-colors border-b-2 ${activeTab === 'transcript' ? 'border-accent-primary text-accent-primary' : 'border-transparent text-secondary-text hover:text-primary-text'}`}
@@ -300,27 +313,73 @@ function PostMeetingContent() {
 
               {activeTab === "summary" && (
                  <div className="space-y-6">
-                    <section>
-                       <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-text mb-2">Key Decisions</h3>
-                       <ul className="list-disc pl-5 space-y-2 text-sm text-primary-text">
-                          <li>Approved the new user retention strategy.</li>
-                          <li>Scheduled Q3 roadmap review for next Tuesday.</li>
-                       </ul>
-                    </section>
-                     <section>
-                       <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-text mb-2">Action Items</h3>
-                       <div className="space-y-2">
-                          <div className="flex items-start gap-2">
-                             <input type="checkbox" className="mt-1 rounded border-gray-300 text-accent-primary focus:ring-accent-primary" defaultChecked />
-                             <span className="text-sm text-secondary-text line-through">Draft announcement email</span>
-                          </div>
-                           <div className="flex items-start gap-2">
-                             <input type="checkbox" className="mt-1 rounded border-gray-300 text-accent-primary focus:ring-accent-primary" />
-                             <span className="text-sm text-primary-text">Sarah to share design assets</span>
-                          </div>
-                       </div>
-                    </section>
-                     <Button variant="secondary" className="w-full text-xs mt-4">Download Full Summary (PDF)</Button>
+                    {isLoadingSummary && (
+                      <div className="flex flex-col items-center justify-center py-12">
+                        <Loader2 className="w-8 h-8 animate-spin text-accent-primary mb-4" />
+                        <p className="text-secondary-text">Generating summary with AI...</p>
+                        <p className="text-muted-text text-sm mt-1">This may take a moment</p>
+                      </div>
+                    )}
+
+                    {summaryGenerated && !isLoadingSummary && (
+                      <>
+                        <div 
+                          ref={summaryRef}
+                          className="summary-content"
+                        >
+                          <style>{`
+                            .summary-content h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; }
+                            .summary-content h2 { font-size: 1.125rem; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.75rem; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 0.5rem; }
+                            .summary-content h3 { font-size: 1rem; font-weight: 600; margin-top: 1rem; margin-bottom: 0.5rem; }
+                            .summary-content p { margin-bottom: 0.75rem; line-height: 1.6; opacity: 0.85; }
+                            .summary-content ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 1rem; }
+                            .summary-content ol { list-style-type: decimal; padding-left: 1.5rem; margin-bottom: 1rem; }
+                            .summary-content li { margin-bottom: 0.5rem; line-height: 1.5; opacity: 0.85; }
+                            .summary-content strong { font-weight: 600; }
+                          `}</style>
+                          <ReactMarkdown>{summary}</ReactMarkdown>
+                        </div>
+                        <Button 
+                          variant="secondary" 
+                          className="w-full text-xs mt-4"
+                          onClick={async () => {
+                            // Create a temporary container with PDF-friendly styling
+                            const pdfContainer = document.createElement('div');
+                            pdfContainer.style.cssText = 'background: white; color: #1f2937; padding: 40px; font-family: system-ui, sans-serif; max-width: 800px;';
+                            pdfContainer.innerHTML = `
+                              <style>
+                                .pdf-content h1 { font-size: 24px; font-weight: 700; margin-bottom: 8px; color: #111827; }
+                                .pdf-content h2 { font-size: 18px; font-weight: 600; margin-top: 24px; margin-bottom: 12px; color: #1f2937; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; }
+                                .pdf-content h3 { font-size: 16px; font-weight: 600; margin-top: 16px; margin-bottom: 8px; color: #374151; }
+                                .pdf-content p { margin-bottom: 12px; line-height: 1.6; color: #4b5563; }
+                                .pdf-content ul { list-style-type: disc; padding-left: 24px; margin-bottom: 16px; }
+                                .pdf-content ol { list-style-type: decimal; padding-left: 24px; margin-bottom: 16px; }
+                                .pdf-content li { margin-bottom: 8px; color: #4b5563; line-height: 1.5; }
+                                .pdf-content strong { font-weight: 600; color: #1f2937; }
+                              </style>
+                              <div class="pdf-content">${summaryRef.current?.innerHTML || ''}</div>
+                            `;
+                            document.body.appendChild(pdfContainer);
+                            
+                            try {
+                              const html2pdf = (await import("html2pdf.js")).default;
+                              const opt = {
+                                margin: 0.5,
+                                filename: `meeting-summary-${botId}.pdf`,
+                                image: { type: "jpeg" as const, quality: 0.98 },
+                                html2canvas: { scale: 2, useCORS: true, logging: false },
+                                jsPDF: { unit: "in" as const, format: "letter" as const, orientation: "portrait" as const }
+                              };
+                              await html2pdf().set(opt).from(pdfContainer).save();
+                            } finally {
+                              document.body.removeChild(pdfContainer);
+                            }
+                          }}
+                        >
+                          Download Full Summary (PDF)
+                        </Button>
+                      </>
+                    )}
                  </div>
               )}
 

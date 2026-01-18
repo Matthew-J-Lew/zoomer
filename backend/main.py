@@ -17,6 +17,7 @@ from svix.webhooks import Webhook, WebhookVerificationError
 from qa_engine import QAEngine
 from store import append_final_utterance, get_or_create_meeting, remember_participant, set_agenda, set_status
 from topic_tracker import TopicTracker
+from llm_client import LLMClient
 
 # Directory for transcript files
 TRANSCRIPTS_DIR = "transcripts"
@@ -375,6 +376,53 @@ async def get_transcript(bot_id: str):
         "recording_started_at": st.recording_started_at,
         "transcript": transcript,
     }
+
+
+@app.get("/meeting/{bot_id}/summary")
+async def get_summary(bot_id: str):
+    """Generate a meeting summary using Gemini.
+
+    Returns a markdown-formatted summary of the meeting.
+    """
+    st = get_or_create_meeting(bot_id)
+    
+    if not st.transcript_history:
+        return {
+            "bot_id": bot_id,
+            "summary": "*No transcript available to summarize.*",
+            "confidence": 0.0,
+        }
+    
+    # Format transcript as text for LLM
+    transcript_lines = []
+    for u in st.transcript_history:
+        transcript_lines.append(f"{u.speaker}: {u.text}")
+    transcript_text = "\n".join(transcript_lines)
+    
+    # Get meeting date from first utterance
+    meeting_date = ""
+    if st.transcript_history:
+        from datetime import datetime
+        first_ts = st.transcript_history[0].ts
+        meeting_date = datetime.fromtimestamp(first_ts).strftime("%B %d, %Y")
+    
+    try:
+        llm = LLMClient()
+        result = await llm.generate_summary(
+            transcript_text=transcript_text,
+            meeting_date=meeting_date,
+        )
+        return {
+            "bot_id": bot_id,
+            "summary": result.summary,
+            "confidence": result.confidence,
+        }
+    except Exception as e:
+        print(f"[summary] Error: {repr(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate summary: {str(e)}",
+        )
 
 
 @app.post("/meeting/{bot_id}/leave")

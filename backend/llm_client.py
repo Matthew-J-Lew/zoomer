@@ -30,6 +30,12 @@ class QAResult:
     confidence: float
 
 
+@dataclass
+class SummaryResult:
+    summary: str  # Markdown formatted summary
+    confidence: float
+
+
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
@@ -295,3 +301,134 @@ class LLMClient:
             answer = answer[:347] + "..."
 
         return QAResult(answer=answer, confidence=confidence)
+
+    def _chunk_transcript(self, transcript_text: str, max_chars: int = 25000) -> list[str]:
+        """Split transcript into chunks that fit within context limits."""
+        if len(transcript_text) <= max_chars:
+            return [transcript_text]
+
+        chunks = []
+        lines = transcript_text.split("\n")
+        current_chunk = []
+        current_len = 0
+
+        for line in lines:
+            line_len = len(line) + 1  # +1 for newline
+            if current_len + line_len > max_chars and current_chunk:
+                chunks.append("\n".join(current_chunk))
+                current_chunk = [line]
+                current_len = line_len
+            else:
+                current_chunk.append(line)
+                current_len += line_len
+
+        if current_chunk:
+            chunks.append("\n".join(current_chunk))
+
+        return chunks
+
+    async def _summarize_chunk(self, chunk: str, chunk_num: int, total_chunks: int) -> str:
+        """Summarize a single transcript chunk."""
+        system = (
+            "You are a professional meeting assistant. "
+            "Summarize the meeting transcript excerpt provided. "
+            "Extract key points, decisions, and action items mentioned."
+        )
+        user = (
+            f"This is part {chunk_num} of {total_chunks} of a meeting transcript.\n\n"
+            "Transcript:\n"
+            f"{chunk}\n\n"
+            "Return JSON only:\n"
+            "{\n"
+            "  \"key_points\": [\"point 1\", \"point 2\"],\n"
+            "  \"action_items\": [\"action 1\", \"action 2\"],\n"
+            "  \"decisions\": [\"decision 1\"],\n"
+            "  \"discussion_summary\": \"Brief summary of what was discussed\"\n"
+            "}\n"
+        )
+
+        obj = await self._chat_json(system=system, user=user)
+        return json.dumps(obj)
+
+    async def generate_summary(
+        self,
+        transcript_text: str,
+        meeting_date: str = "",
+    ) -> SummaryResult:
+        """Generate a markdown meeting summary from transcript.
+
+        Handles long transcripts by chunking and combining summaries.
+        """
+        if not transcript_text.strip():
+            return SummaryResult(
+                summary="*No transcript available to summarize.*",
+                confidence=0.0,
+            )
+
+        chunks = self._chunk_transcript(transcript_text)
+        print(f"[summary] Processing {len(chunks)} chunk(s)")
+
+        # Summarize each chunk
+        chunk_summaries = []
+        for i, chunk in enumerate(chunks, 1):
+            try:
+                summary = await self._summarize_chunk(chunk, i, len(chunks))
+                chunk_summaries.append(summary)
+            except Exception as e:
+                print(f"[summary] Chunk {i} failed: {repr(e)}")
+                chunk_summaries.append("{}")
+
+        # Combine chunk summaries into final summary
+        combined_context = "\n---\n".join(chunk_summaries)
+
+        system = (
+            "You are a professional meeting assistant. "
+            "Create a well-structured meeting summary in Markdown format. "
+            "Combine the provided chunk summaries into a cohesive document."
+        )
+        user = (
+            "Combine these meeting summary excerpts into a final meeting summary:\n\n"
+            f"{combined_context}\n\n"
+            f"Meeting date: {meeting_date or 'Not specified'}\n\n"
+            "Return JSON with a single field:\n"
+            "{\n"
+            "  \"markdown\": \"Full markdown summary\",\n"
+            "  \"confidence\": number 0..1\n"
+            "}\n\n"
+            "The markdown should follow this structure:\n"
+            "# Meeting Summary\n"
+            "**Date:** [date]\n\n"
+            "## Key Points\n"
+            "- point 1\n"
+            "- point 2\n\n"
+            "## Action Items\n"
+            "- [ ] Action 1\n"
+            "- [ ] Action 2\n\n"
+            "## Decisions Made\n"
+            "- Decision 1\n\n"
+            "## Discussion Topics\n"
+            "Brief narrative of what was discussed.\n\n"
+            "Rules:\n"
+            "- Be concise but comprehensive\n"
+            "- Use bullet points for clarity\n"
+            "- Use checkboxes for action items\n"
+            "- Combine duplicate items from different chunks\n"
+        )
+
+        try:
+            obj = await self._chat_json(system=system, user=user)
+            markdown = str(obj.get("markdown", "") or "").strip()
+            confidence = _clamp01(obj.get("confidence", 0.7))
+
+            if not markdown:
+                markdown = "*Failed to generate summary. Please try again.*"
+                confidence = 0.0
+
+            return SummaryResult(summary=markdown, confidence=confidence)
+        except Exception as e:
+            print(f"[summary] Final combination failed: {repr(e)}")
+            return SummaryResult(
+                summary="*Error generating summary. Please try again.*",
+                confidence=0.0,
+            )
+

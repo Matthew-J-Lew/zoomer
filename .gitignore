@@ -49,6 +49,7 @@ backend/__pycache__/
 backend/*.jsonl
 backend/*.log
 backend/.pytest_cache/
+backend/transcripts/
 
 # Python general
 __pycache__/
