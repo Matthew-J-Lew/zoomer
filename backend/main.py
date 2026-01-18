@@ -7,19 +7,20 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Request
 from starlette import status
-
 from pydantic import BaseModel, HttpUrl
-
-# Optional signature verification (Svix-style headers)
+from googletrans import Translator
 from svix.webhooks import Webhook, WebhookVerificationError
 
 from qa_engine import QAEngine
 from store import append_final_utterance, get_or_create_meeting, remember_participant, set_agenda, set_status
 from topic_tracker import TopicTracker
+
+# Directory for transcript files
+TRANSCRIPTS_DIR = "transcripts"
+os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
 
 app = FastAPI(title="Gen-Z Meeting Moderator (MVP: Topic Check-ins)")
 # --- CORS (needed for Next.js dev server calling FastAPI from the browser) ---
@@ -92,6 +93,9 @@ class QAResponse(BaseModel):
     answer: str
     confidence: float
 
+class TranslateFileRequest(BaseModel):
+    filename: str
+    target_lang: str
 
 @dataclass
 class BotDebugState:
@@ -456,7 +460,7 @@ async def recall_webhook_realtime(request: Request):
             "text": text,
             "raw_event": event,
         }
-        transcript_file = f"transcript_{bot_id}.jsonl"
+        transcript_file = os.path.join(TRANSCRIPTS_DIR, f"transcript_{bot_id}.jsonl")
         with open(transcript_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(line, ensure_ascii=False) + "\n")
 
@@ -566,6 +570,128 @@ async def recall_webhook_realtime(request: Request):
         return
 
     return
+
+
+async def translate_jsonl_file(
+    input_file: str,
+    target_lang: str,
+    batch_size: int = 5,
+) -> list[dict]:
+    translator = Translator()
+
+    objects = []
+    texts = []
+    text_positions = []
+
+    # 1. Read JSONL safely
+    with open(input_file, "r", encoding="utf-8") as f:
+        for idx, line in enumerate(f):
+            if not line.strip():
+                continue
+
+            obj = json.loads(line)
+            objects.append(obj)
+
+            text = obj.get("text")
+            if isinstance(text, str) and text.strip():
+                texts.append(text)
+                text_positions.append(len(objects) - 1)
+
+    print(f"[translate] Found {len(texts)} texts to translate to {target_lang}")
+
+    # 2. Translate in batches
+    translated_texts = []
+
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        print(f"[translate] Translating batch {i//batch_size + 1}: {len(batch)} items")
+
+        try:
+            translations = await translator.translate(
+                batch,
+                src="en",
+                dest=target_lang,
+            )
+            # Handle single vs list return
+            if isinstance(translations, list):
+                batch_results = [t.text for t in translations]
+            else:
+                batch_results = [translations.text]
+            translated_texts.extend(batch_results)
+            print(f"[translate] Batch success: {batch_results[:2]}...")
+        except Exception as e:
+            print(f"[translate] Batch failed: {repr(e)}, trying one by one")
+            # fallback to single translation
+            for text in batch:
+                try:
+                    result = await translator.translate(text, src="en", dest=target_lang)
+                    translated_texts.append(result.text)
+                    print(f"[translate] Single success: '{text[:30]}' -> '{result.text[:30]}'")
+                except Exception as e2:
+                    print(f"[translate] Single failed: {repr(e2)}, keeping original")
+                    translated_texts.append(text)
+
+    print(f"[translate] Completed: {len(translated_texts)} translations")
+
+    # 3. Map translations back
+    for pos, translated in zip(text_positions, translated_texts):
+        objects[pos]["text"] = translated
+
+    return objects
+
+
+@app.post("/translate-file")
+async def translate_file(req: TranslateFileRequest):
+    """Translate a transcript file, with caching.
+    
+    Cached translations are stored as: transcript_{botId}_{lang}.jsonl
+    """
+    # Build file paths
+    original_file = os.path.join(TRANSCRIPTS_DIR, req.filename)
+    
+    # Extract bot_id from filename (e.g., "transcript_abc123.jsonl" -> "abc123")
+    base_name = req.filename.replace("transcript_", "").replace(".jsonl", "")
+    cache_file = os.path.join(TRANSCRIPTS_DIR, f"transcript_{base_name}_{req.target_lang}.jsonl")
+
+    if not os.path.exists(original_file):
+        raise HTTPException(status_code=404, detail="Transcript file not found")
+
+    # Check if cached translation exists
+    if os.path.exists(cache_file):
+        print(f"[translate] Using cached translation: {cache_file}")
+        try:
+            cached_data = []
+            with open(cache_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        cached_data.append(json.loads(line))
+            return {"translated_data": cached_data, "cached": True}
+        except Exception as e:
+            print(f"[translate] Cache read failed, regenerating: {e}")
+
+    try:
+        # Run translation (now async)
+        translated_data = await translate_jsonl_file(
+            input_file=original_file,
+            target_lang=req.target_lang,
+        )
+
+        # Save to cache file
+        try:
+            with open(cache_file, "w", encoding="utf-8") as f:
+                for item in translated_data:
+                    f.write(json.dumps(item, ensure_ascii=False) + "\n")
+            print(f"[translate] Cached translation to: {cache_file}")
+        except Exception as e:
+            print(f"[translate] Failed to cache translation: {e}")
+
+        return {"translated_data": translated_data, "cached": False}
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Translation failed: {str(e)}",
+        )
 
 
 @app.post("/recall/webhook/bot_status/", status_code=status.HTTP_204_NO_CONTENT)

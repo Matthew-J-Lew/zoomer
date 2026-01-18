@@ -26,6 +26,11 @@ function PostMeetingContent() {
   const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
   const [recordingStartedAt, setRecordingStartedAt] = useState<number>(0);
   const [isLoadingTranscript, setIsLoadingTranscript] = useState(true);
+  
+  // Translation state
+  const [language, setLanguage] = useState<string>("en");
+  const [translatedTranscript, setTranslatedTranscript] = useState<TranscriptItem[]>([]);
+  const [isTranslating, setIsTranslating] = useState(false);
 
   // Fetch recording URL
   useEffect(() => {
@@ -88,6 +93,47 @@ function PostMeetingContent() {
 
     fetchTranscript();
   }, [botId]);
+
+  // Translate transcript when language changes
+  useEffect(() => {
+    if (!botId || language === "en") {
+      setTranslatedTranscript([]);
+      return;
+    }
+
+    const translateTranscript = async () => {
+      setIsTranslating(true);
+      try {
+        const res = await fetch(`${API_BASE_URL}/translate-file`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: `transcript_${botId}.jsonl`,
+            target_lang: language,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          // Map translated data to TranscriptItem format
+          const items: TranscriptItem[] = (data.translated_data || []).map((item: any) => ({
+            ts: item.ts,
+            speaker: item.speaker,
+            text: item.text,
+          }));
+          setTranslatedTranscript(items);
+        }
+      } catch (e) {
+        console.error("Translation failed:", e);
+      } finally {
+        setIsTranslating(false);
+      }
+    };
+
+    translateTranscript();
+  }, [botId, language]);
+
+  // Use translated transcript if available, otherwise original
+  const displayTranscript = language === "en" ? transcript : (translatedTranscript.length > 0 ? translatedTranscript : transcript);
 
   // Format relative timestamp as MM:SS
   const formatTime = (ts: number): string => {
@@ -200,15 +246,42 @@ function PostMeetingContent() {
 
            <div className="flex-1 min-h-0 overflow-y-auto p-4 pb-8 scrollbar-thin scrollbar-thumb-surface-subtle scrollbar-track-transparent">
               {activeTab === 'transcript' && (
-                 <div className="space-y-1">
+                 <div className="space-y-3">
+                    {/* Language Selector */}
+                    <div className="flex items-center gap-2 pb-2 border-b border-border">
+                      <svg className="w-4 h-4 text-secondary-text" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <select 
+                        value={language}
+                        onChange={(e) => setLanguage(e.target.value)}
+                        className="bg-surface-subtle border border-border text-secondary-text text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-focus cursor-pointer hover:border-accent-primary transition-colors"
+                      >
+                        <option value="en">English</option>
+                        <option value="es">Español</option>
+                        <option value="fr">Français</option>
+                        <option value="de">Deutsch</option>
+                        <option value="pt">Português</option>
+                        <option value="zh-cn">中文</option>
+                        <option value="ja">日本語</option>
+                        <option value="ko">한국어</option>
+                        <option value="hi">हिन्दी</option>
+                        <option value="ar">العربية</option>
+                      </select>
+                      {isTranslating && (
+                        <Loader2 className="w-4 h-4 animate-spin text-muted-text" />
+                      )}
+                    </div>
+
+                    {/* Transcript List */}
                     {isLoadingTranscript ? (
                       <div className="flex items-center justify-center py-8">
                         <Loader2 className="w-6 h-6 animate-spin text-muted-text" />
                       </div>
-                    ) : transcript.length === 0 ? (
+                    ) : displayTranscript.length === 0 ? (
                       <p className="text-muted-text text-sm text-center py-8">No transcript available</p>
                     ) : (
-                      transcript.map((item, index) => (
+                      displayTranscript.map((item, index) => (
                        <div 
                          key={index} 
                          onClick={() => handleTranscriptClick(item.ts)}
