@@ -1,9 +1,17 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
+import { Clock, FileText, ChevronRight } from "lucide-react";
+
+interface TranscriptInfo {
+  bot_id: string;
+  filename: string;
+  created_at: string;
+  utterance_count: number;
+}
 
 export default function Home() {
   const router = useRouter();
@@ -13,6 +21,31 @@ export default function Home() {
   const [updateInterval, setUpdateInterval] = useState(60);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  // Previous meetings state
+  const [previousMeetings, setPreviousMeetings] = useState<TranscriptInfo[]>([]);
+  const [isLoadingMeetings, setIsLoadingMeetings] = useState(true);
+
+  const backendBase = (process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000").replace(/\/$/, "");
+
+  // Fetch previous meetings on mount
+  useEffect(() => {
+    const fetchPreviousMeetings = async () => {
+      try {
+        const res = await fetch(`${backendBase}/transcripts`);
+        if (res.ok) {
+          const data = await res.json();
+          setPreviousMeetings(data.transcripts || []);
+        }
+      } catch (e) {
+        console.error("Failed to fetch previous meetings:", e);
+      } finally {
+        setIsLoadingMeetings(false);
+      }
+    };
+
+    fetchPreviousMeetings();
+  }, [backendBase]);
 
   const formatInterval = (seconds: number) => {
     if (seconds < 60) return `${seconds} seconds`;
@@ -26,8 +59,6 @@ export default function Home() {
     setIsSubmitting(true);
 
     try {
-      const backendBase = (process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000").replace(/\/$/, "");
-
       const resp = await fetch(`${backendBase}/start-meeting-bot`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -61,6 +92,10 @@ export default function Home() {
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleViewPreviousMeeting = (botId: string) => {
+    router.push(`/post-meeting?botId=${botId}`);
   };
 
   return (
@@ -164,6 +199,38 @@ export default function Home() {
             </Button>
           </form>
         </Card>
+
+        {/* Previous Meetings Section */}
+        {!isLoadingMeetings && previousMeetings.length > 0 && (
+          <div className="mt-8">
+            <h2 className="text-lg font-semibold text-primary-text mb-4 flex items-center gap-2">
+              <Clock className="w-5 h-5 text-accent" />
+              Previous Meetings
+            </h2>
+            <div className="space-y-3">
+              {previousMeetings.slice(0, 5).map((meeting) => (
+                <button
+                  key={meeting.bot_id}
+                  onClick={() => handleViewPreviousMeeting(meeting.bot_id)}
+                  className="w-full text-left bg-surface border border-border rounded-xl px-4 py-3 hover:border-accent/50 hover:bg-surface-subtle transition-all group"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-accent/10 rounded-lg">
+                        <FileText className="w-4 h-4 text-accent" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-primary-text">{meeting.created_at}</p>
+                        <p className="text-xs text-muted-text">{meeting.utterance_count} utterances</p>
+                      </div>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-muted-text group-hover:text-accent transition-colors" />
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

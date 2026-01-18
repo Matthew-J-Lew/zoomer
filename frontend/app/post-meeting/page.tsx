@@ -247,11 +247,9 @@ function PostMeetingContent() {
       <header className="mb-6 flex justify-between items-center">
         <div>
            <h1 className="text-2xl font-semibold text-primary-text">Meeting Recap</h1>
-           <p className="text-secondary-text text-sm">Weekly Sync with Design Team • Oct 24, 2025</p>
         </div>
         <div className="flex gap-3">
           <Button variant="secondary" onClick={() => router.push("/")}>New Meeting</Button>
-          <Button variant="secondary" onClick={() => window.print()}>Export Report</Button>
         </div>
       </header>
 

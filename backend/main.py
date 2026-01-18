@@ -68,6 +68,60 @@ topic_tracker = TopicTracker()
 TOPIC_TASK_RUNNING: Dict[str, bool] = {}
 
 
+def load_transcript_from_file(bot_id: str) -> bool:
+    """Load transcript from file into meeting state if not already loaded.
+    
+    Returns True if transcript was loaded (or already exists), False if file not found.
+    """
+    st = get_or_create_meeting(bot_id)
+    
+    # Already has transcript data
+    if st.transcript_history:
+        return True
+    
+    # Try to load from file
+    transcript_file = os.path.join(TRANSCRIPTS_DIR, f"transcript_{bot_id}.jsonl")
+    if not os.path.exists(transcript_file):
+        return False
+    
+    try:
+        with open(transcript_file, "r", encoding="utf-8") as f:
+            first_ts = None
+            for line in f:
+                if not line.strip():
+                    continue
+                obj = json.loads(line)
+                ts = obj.get("ts", 0.0)
+                speaker = obj.get("speaker", "unknown")
+                text = obj.get("text", "")
+                if text:
+                    append_final_utterance(bot_id, speaker=speaker, text=text, ts=ts)
+                    if first_ts is None:
+                        first_ts = ts
+            
+            # Set recording_started_at from first utterance
+            if first_ts is not None:
+                st.recording_started_at = first_ts
+            
+            # Mark as done since this is historical
+            st.status = "done"
+        return True
+    except Exception as e:
+        print(f"[load_transcript] Error loading {transcript_file}: {repr(e)}")
+        return False
+
+
+class TranscriptInfo(BaseModel):
+    bot_id: str
+    filename: str
+    created_at: str
+    utterance_count: int
+
+
+class TranscriptsListResponse(BaseModel):
+    transcripts: list[TranscriptInfo]
+
+
 class StartMeetingBotRequest(BaseModel):
     meeting_url: HttpUrl
     agenda: Optional[str] = None
@@ -268,12 +322,69 @@ def healthz():
     return {"ok": True}
 
 
+@app.get("/transcripts", response_model=TranscriptsListResponse)
+async def list_transcripts():
+    """List available transcripts from the transcripts directory.
+    
+    Excludes translated versions (files with language suffix like _es.jsonl).
+    Returns transcripts sorted by creation time (newest first).
+    """
+    import re
+    from datetime import datetime
+    
+    transcripts = []
+    
+    # Pattern to match original transcripts only (not translated ones)
+    # Format: transcript_{uuid}.jsonl (excludes transcript_{uuid}_{lang}.jsonl)
+    pattern = re.compile(r"^transcript_([a-f0-9\-]+)\.jsonl$")
+    
+    if not os.path.exists(TRANSCRIPTS_DIR):
+        return TranscriptsListResponse(transcripts=[])
+    
+    for filename in os.listdir(TRANSCRIPTS_DIR):
+        match = pattern.match(filename)
+        if not match:
+            continue
+        
+        bot_id = match.group(1)
+        filepath = os.path.join(TRANSCRIPTS_DIR, filename)
+        
+        try:
+            # Get file modification time as creation date
+            mtime = os.path.getmtime(filepath)
+            created_at = datetime.fromtimestamp(mtime).strftime("%B %d, %Y at %I:%M %p")
+            
+            # Count lines (utterances)
+            with open(filepath, "r", encoding="utf-8") as f:
+                utterance_count = sum(1 for line in f if line.strip())
+            
+            transcripts.append(TranscriptInfo(
+                bot_id=bot_id,
+                filename=filename,
+                created_at=created_at,
+                utterance_count=utterance_count,
+            ))
+        except Exception as e:
+            print(f"[list_transcripts] Error processing {filename}: {repr(e)}")
+            continue
+    
+    # Sort by modification time (newest first)
+    transcripts.sort(key=lambda t: os.path.getmtime(
+        os.path.join(TRANSCRIPTS_DIR, t.filename)
+    ), reverse=True)
+    
+    return TranscriptsListResponse(transcripts=transcripts)
+
+
 @app.post("/qa", response_model=QAResponse)
 async def qa(req: QARequest):
     """Web (private) Q&A endpoint.
 
     The frontend can call this with a bot_id + question and get a short answer.
+    Loads transcript from file if not in memory (for historical transcripts).
     """
+    # Try to load from file if not in memory
+    load_transcript_from_file(req.bot_id)
 
     st = get_or_create_meeting(req.bot_id)
     res = await qa_engine.answer(st, req.question, post_meeting=req.post_meeting)
@@ -346,8 +457,22 @@ async def get_status(bot_id: str):
     """Return the current status of the bot.
 
     Status values: "joining", "in_call", "done", "error"
+    For historical transcripts, tries to fetch recording URL from Recall.ai.
     """
+    # Try to load from file if not in memory
+    load_transcript_from_file(bot_id)
+    
     st = get_or_create_meeting(bot_id)
+    
+    # For historical/done transcripts without recording URL, try to fetch it
+    if st.status == "done" and not st.recording_url and st.transcript_history:
+        try:
+            recording_url = await recall_fetch_recording_url(bot_id)
+            if recording_url:
+                st.recording_url = recording_url
+        except Exception as e:
+            print(f"[get_status] Error fetching recording URL: {repr(e)}")
+    
     return {
         "bot_id": bot_id,
         "status": st.status,
@@ -362,7 +487,11 @@ async def get_transcript(bot_id: str):
     """Return the full transcript for a meeting.
 
     Includes recording_started_at for calculating relative timestamps.
+    Loads from file if not in memory (for historical transcripts).
     """
+    # Try to load from file if not in memory
+    load_transcript_from_file(bot_id)
+    
     st = get_or_create_meeting(bot_id)
     transcript = [
         {
@@ -384,7 +513,11 @@ async def get_summary(bot_id: str):
     """Generate a meeting summary using Gemini.
 
     Returns a markdown-formatted summary of the meeting.
+    Loads from file if not in memory (for historical transcripts).
     """
+    # Try to load from file if not in memory
+    load_transcript_from_file(bot_id)
+    
     st = get_or_create_meeting(bot_id)
     
     if not st.transcript_history:
