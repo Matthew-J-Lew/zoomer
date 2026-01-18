@@ -113,14 +113,15 @@ class LLMClient:
                 "Missing API key. Set LLM_API_KEY (openai) or GEMINI_API_KEY (gemini) in .env"
             )
 
-    async def _chat_json(self, system: str, user: str) -> Dict[str, Any]:
+    async def _chat_json(self, system: str, user: str, max_tokens_override: int | None = None) -> Dict[str, Any]:
         """Call the configured provider and return a parsed JSON object."""
         if self.provider == "gemini":
-            return await self._chat_json_gemini(system=system, user=user)
-        return await self._chat_json_openai(system=system, user=user)
+            return await self._chat_json_gemini(system=system, user=user, max_tokens_override=max_tokens_override)
+        return await self._chat_json_openai(system=system, user=user, max_tokens_override=max_tokens_override)
 
-    async def _chat_json_openai(self, system: str, user: str) -> Dict[str, Any]:
+    async def _chat_json_openai(self, system: str, user: str, max_tokens_override: int | None = None) -> Dict[str, Any]:
         url = f"{self.base_url}/chat/completions"
+        tokens = max_tokens_override if max_tokens_override else self.max_tokens
         payload: Dict[str, Any] = {
             "model": self.model,
             "messages": [
@@ -128,7 +129,7 @@ class LLMClient:
                 {"role": "user", "content": user},
             ],
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_tokens": tokens,
             "response_format": {"type": "json_object"},
         }
         headers = {
@@ -143,18 +144,19 @@ class LLMClient:
             content = data["choices"][0]["message"]["content"]
             return _extract_json_object(content)
 
-    async def _chat_json_gemini(self, system: str, user: str) -> Dict[str, Any]:
+    async def _chat_json_gemini(self, system: str, user: str, max_tokens_override: int | None = None) -> Dict[str, Any]:
         # Gemini doesn't have a separate system role in this REST API; we prepend.
         prompt = f"{system}\n\n{user}".strip()
         url = f"{self.base_url}/models/{self.model}:generateContent"
         params = {"key": self.api_key}
+        tokens = max_tokens_override if max_tokens_override else self.max_tokens
         payload: Dict[str, Any] = {
             "contents": [
                 {"role": "user", "parts": [{"text": prompt}]},
             ],
             "generationConfig": {
                 "temperature": self.temperature,
-                "maxOutputTokens": self.max_tokens,
+                "maxOutputTokens": tokens,
             },
         }
         async with httpx.AsyncClient(timeout=self.timeout_s) as client:
@@ -378,7 +380,7 @@ class LLMClient:
             "}\n"
         )
 
-        obj = await self._chat_json(system=system, user=user)
+        obj = await self._chat_json(system=system, user=user, max_tokens_override=2000)
         return json.dumps(obj)
 
     async def generate_summary(
@@ -447,7 +449,7 @@ class LLMClient:
         )
 
         try:
-            obj = await self._chat_json(system=system, user=user)
+            obj = await self._chat_json(system=system, user=user, max_tokens_override=3000)
             markdown = str(obj.get("markdown", "") or "").strip()
             confidence = _clamp01(obj.get("confidence", 0.7))
 

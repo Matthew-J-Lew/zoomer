@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette import status
 from pydantic import BaseModel, HttpUrl
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 from svix.webhooks import Webhook, WebhookVerificationError
 
 from qa_engine import QAEngine
@@ -759,7 +759,9 @@ async def translate_jsonl_file(
     target_lang: str,
     batch_size: int = 5,
 ) -> list[dict]:
-    translator = Translator()
+    """Translate a JSONL transcript file using deep-translator."""
+    import asyncio
+    from functools import partial
 
     objects = []
     texts = []
@@ -781,24 +783,27 @@ async def translate_jsonl_file(
 
     print(f"[translate] Found {len(texts)} texts to translate to {target_lang}")
 
-    # 2. Translate in batches
+    if not texts:
+        return objects
+
+    # 2. Create translator instance for target language
+    translator = GoogleTranslator(source='en', target=target_lang)
+
+    # 3. Translate in batches (deep-translator is sync, so use run_in_executor)
     translated_texts = []
+    loop = asyncio.get_event_loop()
 
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
         print(f"[translate] Translating batch {i//batch_size + 1}: {len(batch)} items")
 
         try:
-            translations = await translator.translate(
-                batch,
-                src="en",
-                dest=target_lang,
+            # Run sync translate_batch in thread pool to not block event loop
+            batch_results = await loop.run_in_executor(
+                None,
+                translator.translate_batch,
+                batch
             )
-            # Handle single vs list return
-            if isinstance(translations, list):
-                batch_results = [t.text for t in translations]
-            else:
-                batch_results = [translations.text]
             translated_texts.extend(batch_results)
             print(f"[translate] Batch success: {batch_results[:2]}...")
         except Exception as e:
@@ -806,16 +811,20 @@ async def translate_jsonl_file(
             # fallback to single translation
             for text in batch:
                 try:
-                    result = await translator.translate(text, src="en", dest=target_lang)
-                    translated_texts.append(result.text)
-                    print(f"[translate] Single success: '{text[:30]}' -> '{result.text[:30]}'")
+                    result = await loop.run_in_executor(
+                        None,
+                        translator.translate,
+                        text
+                    )
+                    translated_texts.append(result)
+                    print(f"[translate] Single success: '{text[:30]}' -> '{result[:30]}'")
                 except Exception as e2:
                     print(f"[translate] Single failed: {repr(e2)}, keeping original")
                     translated_texts.append(text)
 
     print(f"[translate] Completed: {len(translated_texts)} translations")
 
-    # 3. Map translations back
+    # 4. Map translations back
     for pos, translated in zip(text_positions, translated_texts):
         objects[pos]["text"] = translated
 
