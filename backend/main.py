@@ -14,7 +14,7 @@ from pydantic import BaseModel, HttpUrl
 from svix.webhooks import Webhook, WebhookVerificationError
 
 from qa_engine import QAEngine
-from store import append_final_line, append_utterance, get_or_create_meeting, remember_participant, set_agenda
+from store import append_final_utterance, get_or_create_meeting, remember_participant, set_agenda
 from topic_tracker import TopicTracker
 
 app = FastAPI(title="Gen-Z Meeting Moderator (MVP: Topic Check-ins)")
@@ -305,8 +305,10 @@ async def recall_webhook_realtime(request: Request):
 
         # transcript.data (finalized)
         print(f"[final] ({bot_id}) {speaker}: {text}")
+        append_final_utterance(bot_id, speaker=speaker, text=text, ts=time.time())
 
-        # Save transcript line
+        
+# Save transcript line
         line = {
             "ts": time.time(),
             "bot_id": bot_id,
@@ -319,8 +321,6 @@ async def recall_webhook_realtime(request: Request):
             f.write(json.dumps(line, ensure_ascii=False) + "\n")
 
         # Keep rolling buffers
-        append_final_line(bot_id, f"{speaker}: {text}")
-        append_utterance(bot_id, speaker=speaker, text=text, ts=line["ts"])
 
         # Optional echo (debug)
         if ECHO_TO_CHAT and bot_id != "unknown" and text:
