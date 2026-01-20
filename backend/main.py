@@ -23,7 +23,7 @@ from llm_client import LLMClient
 TRANSCRIPTS_DIR = "transcripts"
 os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
 
-app = FastAPI(title="Gen-Z Meeting Moderator (MVP: Topic Check-ins)")
+app = FastAPI(title="Zoomer API")
 # --- CORS (needed for Next.js dev server calling FastAPI from the browser) ---
 app.add_middleware(
     CORSMiddleware,
@@ -786,8 +786,16 @@ async def translate_jsonl_file(
     if not texts:
         return objects
 
-    # 2. Create translator instance for target language
-    translator = GoogleTranslator(source='en', target=target_lang)
+    # 2. Map language codes to deep-translator format
+    # deep-translator uses different codes for some languages
+    lang_map = {
+        "zh-cn": "chinese (simplified)",
+        "zh-tw": "chinese (traditional)",
+    }
+    normalized_lang = lang_map.get(target_lang.lower(), target_lang)
+
+    # 3. Create translator instance for target language
+    translator = GoogleTranslator(source='en', target=normalized_lang)
 
     # 3. Translate in batches (deep-translator is sync, so use run_in_executor)
     translated_texts = []

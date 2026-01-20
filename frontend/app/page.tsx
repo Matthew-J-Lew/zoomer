@@ -208,7 +208,7 @@ export default function Home() {
               Previous Meetings
             </h2>
             <div className="space-y-3">
-              {previousMeetings.slice(0, 5).map((meeting) => (
+              {previousMeetings.slice(0, 15).map((meeting) => (
                 <button
                   key={meeting.bot_id}
                   onClick={() => handleViewPreviousMeeting(meeting.bot_id)}

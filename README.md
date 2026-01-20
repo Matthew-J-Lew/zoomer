@@ -1,81 +1,84 @@
-# Hackville — Gen‑Z AI Meeting Moderator (Recall.ai + Next.js)
+# Zoomer — AI Meeting Assistant
 
-This repo is split into two apps:
-
-- **backend/**: FastAPI server that creates a Recall.ai bot, receives real‑time transcript webhooks, runs tangent detection, and sends chat messages.
-- **frontend/**: Next.js UI to start/monitor meetings (you’ll build this next).
+An accessible AI-powered meeting assistant that provides real-time transcription, topic tracking, AI-generated summaries, transcript translation, and post-meeting Q&A.
 
 ---
 
-## 0) Prereqs
+## Features
+
+### 🎙️ Real-time Meeting Bot
+- Integrates with [Recall.ai](https://recall.ai/) to join video meetings (Zoom, Google Meet, Microsoft Teams, etc.)
+- Real-time transcription via webhooks
+- Topic tracking with periodic updates sent to meeting chat
+
+### 📝 Post-Meeting Recap
+- **Video playback** with synced transcript navigation (click transcript to seek)
+- **AI-generated summaries** using Gemini
+- **Transcript translation** to 10+ languages (Spanish, French, German, Portuguese, Chinese, Japanese, Korean, Hindi, Arabic)
+- **Q&A interface** — ask questions about the meeting content
+- **PDF export** of meeting summaries
+
+### 📚 Meeting History
+- Browse and load previous meeting transcripts
+- View past recordings and regenerate summaries
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| **Backend** | FastAPI, Python 3.9+ |
+| **Frontend** | Next.js 15 (App Router), React 19, TypeScript |
+| **Styling** | Tailwind CSS 4 |
+| **AI/LLM** | OpenAI-compatible API (GPT-4o-mini), Google Gemini |
+| **Translation** | deep-translator |
+| **Meeting Bot** | Recall.ai |
+
+---
+
+## Prerequisites
 
 - **Python 3.9+**
 - **Node.js 18+** (20+ recommended)
 - **ngrok** installed + logged in (`ngrok config add-authtoken ...`)
 - A **Recall.ai API key**
-- (For tangent detection) an **LLM API key** (OpenAI‑compatible)
+- An **LLM API key** (OpenAI-compatible) for topic tracking and Q&A
+- A **Google Gemini API key** for summaries
 
 ---
 
-## 1) Repo structure
-
-Recommended layout:
+## Project Structure
 
 ```
-Hackville/
-  backend/
-    main.py
-    store.py
-    tangent_detector.py
-    llm_client.py
-    requirements.txt
-    .env            # backend only (do not commit)
-    .venv/          # backend only (do not commit)
-  frontend/
-    ...Next.js app...
-  .gitignore
-  README.md
+zoomer/
+├── backend/
+│   ├── main.py              # FastAPI app with all endpoints
+│   ├── llm_client.py        # OpenAI/Gemini LLM integration
+│   ├── qa_engine.py         # Q&A engine for post-meeting questions
+│   ├── topic_tracker.py     # Real-time topic detection
+│   ├── tangent_detector.py  # Meeting tangent detection
+│   ├── translate.py         # Translation utilities
+│   ├── store.py             # In-memory meeting state
+│   ├── transcripts/         # Saved transcript files (JSONL)
+│   ├── requirements.txt
+│   └── .env                  # Backend config (do not commit)
+├── frontend/
+│   ├── app/
+│   │   ├── page.tsx         # Home page (start meeting / view history)
+│   │   ├── meeting/         # Live meeting view
+│   │   └── post-meeting/    # Recap page (video, transcript, summary, Q&A)
+│   ├── components/ui/       # Reusable UI components
+│   └── package.json
+├── .gitignore
+└── README.md
 ```
-
-> Tip: keep `.env`, `.venv`, and `__pycache__` inside `backend/` and gitignore them.
 
 ---
 
-## 2) Create the Next.js frontend (from repo root)
+## Setup
 
-### Using npm (recommended)
-
-```bash
-mkdir frontend
-cd frontend
-npm create next-app@latest .
-```
-
-When prompted, a good default setup is:
-- TypeScript: **Yes**
-- ESLint: **Yes**
-- Tailwind: **Yes**
-- App Router: **Yes**
-- src/ directory: **Yes** (optional; either is fine)
-- Import alias: **Yes** (e.g. `@/*`)
-
-Then start the frontend dev server:
-
-```bash
-npm run dev
-```
-
-The app will run at:
-
-- http://localhost:3000
-
----
-
-## 3) Backend setup
-
-### 3.1 Create & activate venv (Windows PowerShell)
-
-From repo root:
+### 1. Backend Setup
 
 ```powershell
 cd backend
@@ -84,54 +87,52 @@ py -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 3.2 Create `.env` (backend/.env)
-
-Create `backend/.env` with:
+Create `backend/.env`:
 
 ```env
-# Recall
+# Recall.ai
 RECALL_API_KEY=YOUR_RECALL_KEY
 RECALL_BASE_URL=https://us-west-2.recall.ai
 
-# Public URL for webhooks (set after ngrok)
+# Public URL for webhooks (set after starting ngrok)
 PUBLIC_BASE_URL=
 
-# Webhook token auth (you choose)
+# Webhook token auth
 WEBHOOK_TOKEN=dev-secret-token
 
-# Debug (optional): echo finalized transcript lines back into Zoom chat
-ECHO_TO_CHAT=true
-ECHO_MIN_SECONDS=4
-ECHO_MAX_MESSAGES=20
+# Topic tracking
+TOPIC_TRACKER_ENABLED=true
+TOPIC_CHECK_INTERVAL_S=60
 
-# Transcript file output
-TRANSCRIPT_OUTFILE=transcript.final.jsonl
-
-# Tangent detection toggles
-TANGENT_DETECTOR_ENABLED=true
-TANGENT_CHECK_EVERY_S=5
-TANGENT_CONFIDENCE_THRESHOLD=0.7
-TANGENT_COOLDOWN_S=45
-TANGENT_STRIKE_WINDOW_S=20
-
-# LLM (OpenAI-compatible). Required for tangent detection.
+# LLM (OpenAI-compatible) — for topic tracking and Q&A
 LLM_API_KEY=YOUR_LLM_KEY
 LLM_MODEL=gpt-4o-mini
 LLM_BASE_URL=https://api.openai.com/v1
-LLM_TIMEOUT_S=20
+
+# Gemini — for meeting summaries
+GEMINI_API_KEY=YOUR_GEMINI_KEY
 ```
 
-> If `LLM_API_KEY` is missing, tangent detection will safely skip.
+### 2. Frontend Setup
+
+```powershell
+cd frontend
+npm install
+```
+
+### 3. Start ngrok
+
+```powershell
+ngrok http 8000
+```
+
+Copy the forwarding URL (e.g., `https://xxxxxx.ngrok-free.dev`) and update `PUBLIC_BASE_URL` in `backend/.env`.
 
 ---
 
-## 4) Run everything (local dev)
+## Running the App
 
-You will run **three terminals**:
-
-### Terminal A — Backend (FastAPI)
-
-From repo root:
+### Terminal A — Backend
 
 ```powershell
 cd backend
@@ -139,129 +140,83 @@ cd backend
 uvicorn main:app --reload --port 8000 --env-file .env
 ```
 
-Sanity check:
+Verify: http://localhost:8000/healthz → `{"ok": true}`
 
-- http://localhost:8000/healthz  → `{"ok": true}`
-
-### Terminal B — ngrok (public webhook tunnel)
+### Terminal B — Frontend
 
 ```powershell
-ngrok http 8000
+cd frontend
+npm run dev
 ```
 
-Copy the forwarding URL, for example:
-
-- `https://xxxxxx.ngrok-free.dev`
-
-Put it into `backend/.env`:
-
-```env
-PUBLIC_BASE_URL=https://xxxxxx.ngrok-free.dev
-```
-
-Then **restart Terminal A** (Ctrl+C then run uvicorn again) so the backend reloads `.env`.
-
-### Terminal C — Start the bot (join Zoom)
-
-Start a bot and provide an agenda (agenda is required for tangent detection):
-
-```powershell
-$body = @{
-  meeting_url = "https://YOUR_ZOOM_LINK_HERE"
-  agenda = "Decide MVP scope, assign tasks, and agree on the demo plan."
-} | ConvertTo-Json
-
-$response = Invoke-RestMethod -Method Post -Uri "http://localhost:8000/start-meeting-bot" -ContentType "application/json" -Body $body
-$response
-```
-
-Copy the returned `bot_id`.
-
-Optional: set/update agenda later:
-
-```powershell
-$botId = $response.bot_id
-Invoke-RestMethod -Method Post -Uri "http://localhost:8000/meeting/$botId/agenda" -ContentType "application/json" -Body (@{ agenda="Updated agenda text" } | ConvertTo-Json)
-```
+Open: http://localhost:3000
 
 ---
 
-## 5) Verify it works
+## API Endpoints
 
-### Transcript
-When people talk, backend logs should show:
-
-- `[partial] (...) Speaker: ...`
-- `[final] (...) Speaker: ...`
-
-### Chat messages
-- If `ECHO_TO_CHAT=true`, the bot will post “Echo …” messages to Zoom chat (throttled).
-- For tangent detection, after sustained off-topic conversation, you should see:
-  - `[tangent_check] ...` in logs
-  - A single “back on track” message in Zoom chat (cooldown prevents spam).
-
-### Transcript file
-Backend writes finalized transcript lines to:
-
-- `backend/transcript.final.jsonl`
-
----
-
-## 6) Common issues
-
-### Bot joins but chat messages don’t appear
-This is usually Zoom meeting settings:
-- Chat set to “Host only” or restricted.
-- Enable chat for “Everyone”.
-
-### No webhook traffic arrives
-- Ensure ngrok is running and `PUBLIC_BASE_URL` is updated correctly.
-- Ensure you restarted uvicorn after editing `.env`.
-- Ensure your webhook URL includes `?token=...` and `WEBHOOK_TOKEN` matches.
-
-### Tangent detector never runs
-- Ensure `agenda` is set (via start-meeting-bot request or the agenda endpoint).
-- Ensure `LLM_API_KEY` is set.
-- Check logs for `[tangent_check]`.
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/healthz` | Health check |
+| `GET` | `/transcripts` | List saved transcripts |
+| `POST` | `/start-meeting-bot` | Start a bot to join a meeting |
+| `POST` | `/meeting/{bot_id}/agenda` | Set/update meeting agenda |
+| `GET` | `/meeting/{bot_id}/topic` | Get current meeting topic |
+| `GET` | `/meeting/{bot_id}/status` | Get bot status + recording URL |
+| `GET` | `/meeting/{bot_id}/transcript` | Get full transcript |
+| `GET` | `/meeting/{bot_id}/summary` | Generate AI summary |
+| `POST` | `/meeting/{bot_id}/leave` | Tell bot to leave meeting |
+| `POST` | `/qa` | Ask a question about a meeting |
+| `POST` | `/translate-file` | Translate transcript to another language |
+| `POST` | `/recall/webhook/realtime/` | Webhook for real-time transcripts |
+| `POST` | `/recall/webhook/bot-status/` | Webhook for bot status changes |
 
 ---
 
-## 7) Next.js frontend ↔ backend connection (dev)
+## Usage
 
-In development, you can call the backend directly from Next.js:
+### Start a New Meeting
 
-- Backend: `http://localhost:8000`
-- Frontend: `http://localhost:3000`
+1. Open http://localhost:3000
+2. Enter your meeting link (Zoom, Google Meet, etc.)
+3. Optionally add a meeting topic/context
+4. Click **Connect Assistant**
+5. The bot will join and start transcribing
 
-If you hit CORS issues later, add FastAPI CORS middleware, or proxy via Next.js route handlers.
+### View Meeting Recap
+
+After the meeting ends (or select a previous meeting from the home page):
+
+- **Transcript tab**: View/translate the full transcript, click to seek video
+- **Summary tab**: AI-generated meeting summary with PDF export
+- **Questions tab**: Ask questions about the meeting content
 
 ---
 
-## Useful endpoints
+## Common Issues
 
-- `GET  /healthz`
-- `POST /start-meeting-bot`
-- `POST /meeting/{bot_id}/agenda`
-- `POST /recall/webhook/realtime/` (called by Recall via ngrok)
+### Bot joins but no transcript appears
+- Ensure ngrok is running and `PUBLIC_BASE_URL` is set correctly
+- Restart the backend after editing `.env`
+- Check that webhook URLs include `?token=...` matching `WEBHOOK_TOKEN`
+
+### Recording not available
+- Recording processing can take a few minutes after the meeting ends
+- The post-meeting page will poll for up to 2 minutes
+
+### Translation not working
+- Ensure `deep-translator` is installed (`pip install deep-translator`)
+- Check that the backend has internet access
 
 ---
 
-## Suggested .gitignore additions
+## .gitignore
 
 ```
 backend/.env
 backend/.venv/
 backend/__pycache__/
-backend/*.jsonl
+backend/transcripts/
 frontend/node_modules/
 frontend/.next/
 ```
-
-
-
-Okay we're slightly switching scope, instead of tangent detection and sending chat messages based on that, we're going to do the following:
-1. At 30 second intervals, check in on the meeting topic, send the meeting topic in chat, if the topic has not changed then pass
-
-Can we rewire the tangent code such that:
-- every 30 seconds, makes a topic/checks a topic
-- if the current topic 
