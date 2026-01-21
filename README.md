@@ -2,12 +2,16 @@
 
 An accessible AI-powered meeting assistant that provides real-time transcription, topic tracking, AI-generated summaries, transcript translation, and post-meeting Q&A.
 
+<p align="center">
+  <img src="docs/images/home.png" alt="Zoomer Home Page" width="600">
+</p>
+
 ---
 
 ## Features
 
 ### 🎙️ Real-time Meeting Bot
-- Integrates with [Recall.ai](https://recall.ai/) to join video meetings (Zoom, Google Meet, Microsoft Teams, etc.)
+- Integrates with [Recall.ai](https://recall.ai/) to join Zoom meetings (Google Meet and Microsoft Teams coming soon...)
 - Real-time transcription via webhooks
 - Topic tracking with periodic updates sent to meeting chat
 
@@ -18,9 +22,21 @@ An accessible AI-powered meeting assistant that provides real-time transcription
 - **Q&A interface** — ask questions about the meeting content
 - **PDF export** of meeting summaries
 
+<p align="center">
+  <img src="docs/images/transcript.png" alt="Meeting Recap with Video and Transcript" width="800">
+</p>
+
 ### 📚 Meeting History
 - Browse and load previous meeting transcripts
 - View past recordings and regenerate summaries
+
+---
+
+## Screenshots
+
+| Summary | Q&A |
+|:-------:|:---:|
+| ![AI-Generated Summary](docs/images/summary.png) | ![Post-Meeting Q&A](docs/images/questions.png) |
 
 ---
 
@@ -70,6 +86,7 @@ zoomer/
 │   │   └── post-meeting/    # Recap page (video, transcript, summary, Q&A)
 │   ├── components/ui/       # Reusable UI components
 │   └── package.json
+├── docs/images/             # Screenshots for README
 ├── .gitignore
 └── README.md
 ```
